@@ -1,0 +1,20 @@
+[package]
+name = "fenestra-cli"
+description = "CLI/server for the Fenestra OGC services gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "fenestra"
+path = "src/main.rs"
+
+[dependencies]
+fenestra-core.workspace = true
+clap = { version = "4", features = ["derive"] }
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
