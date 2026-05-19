@@ -9,9 +9,11 @@ mod config;
 mod error;
 mod wfs;
 mod wms;
+mod wmts;
 
 pub use capabilities::ServiceMetadata;
 pub use config::{LayerConfig, ServiceConfig};
 pub use error::Error;
 pub use wfs::{WfsGetFeatureRequest, WfsResponse};
 pub use wms::{WmsGetMapRequest, WmsResponse};
+pub use wmts::{WmtsGetTileRequest, WmtsResponse, wmts_capabilities_xml};
