@@ -1,12 +1,13 @@
 //! Fenestra — OGC services gateway.
 //!
-//! Protocol implementations for WMS, WFS, WMTS, and WCS.
+//! Protocol implementations for WMS, WFS, WMTS, WCS, and OGC API Features.
 //! Provides request parsing, capability document generation,
 //! and response formatting.
 
 pub mod capabilities;
 mod config;
 mod error;
+pub mod ogcapi;
 mod wfs;
 mod wms;
 mod wmts;
@@ -14,6 +15,10 @@ mod wmts;
 pub use capabilities::ServiceMetadata;
 pub use config::{LayerConfig, ServiceConfig};
 pub use error::Error;
+pub use ogcapi::{
+    BboxFilter, CollectionInfo, ConformanceDeclaration, Feature, FeatureCollection, Geometry,
+    LandingPage, Link, paginate_features,
+};
 pub use wfs::{WfsGetFeatureRequest, WfsResponse};
 pub use wms::{WmsGetMapRequest, WmsResponse};
 pub use wmts::{WmtsGetTileRequest, WmtsResponse, wmts_capabilities_xml};
