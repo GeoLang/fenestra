@@ -8,6 +8,7 @@ pub mod capabilities;
 mod config;
 mod error;
 pub mod ogcapi;
+pub mod sld;
 mod wfs;
 mod wms;
 mod wmts;
@@ -18,6 +19,10 @@ pub use error::Error;
 pub use ogcapi::{
     BboxFilter, CollectionInfo, ConformanceDeclaration, Feature, FeatureCollection, Geometry,
     LandingPage, Link, paginate_features,
+};
+pub use sld::{
+    Fill, Graphic, LineSymbolizer, Mark, NamedLayer, PointSymbolizer, PolygonSymbolizer, Rule,
+    Stroke, Style, StyledLayerDescriptor, Symbolizer, TextSymbolizer, parse_sld,
 };
 pub use wfs::{WfsGetFeatureRequest, WfsResponse};
 pub use wms::{WmsGetMapRequest, WmsResponse};
