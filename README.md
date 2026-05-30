@@ -2,12 +2,17 @@
 
 OGC services gateway for the TileTopia-HQ GIS stack.
 
+[Documentation](https://tiletopia-hq.github.io/fenestra/) · [GitHub](https://github.com/TileTopia-HQ/fenestra)
+
 ## Features
 
-- **WMS** — GetCapabilities, GetMap request parsing
-- **WFS** — GetCapabilities, GetFeature with bbox filtering
-- **HTTP server** — Axum-based, async, production-ready
-- **Configuration** — JSON-based layer and service config
+- **WMS** — GetCapabilities (XML 1.3.0), GetMap request parsing with CRS/BBOX validation
+- **WFS** — GetCapabilities (XML 2.0.0), GetFeature with bbox filtering, GeoJSON response, feature count limiting
+- **WMTS** — GetCapabilities, GetTile request parsing, tile matrix set definitions
+- **OGC API Features** — Landing page, conformance, collections, feature CRUD, bbox filtering, pagination
+- **SLD/SE styling** — Parse Styled Layer Descriptors: NamedLayer, Rules, PointSymbolizer, LineSymbolizer, PolygonSymbolizer, TextSymbolizer, Fill, Stroke, Graphic, Mark
+- **HTTP server** — Axum-based, async, production-ready with configurable host/port
+- **Configuration** — JSON-based layer config with per-layer CRS, BBOX, and data source paths
 
 ## Usage
 
@@ -26,6 +31,19 @@ fenestra config
 - `GET /wms?SERVICE=WMS&REQUEST=GetMap&LAYERS=...&BBOX=...&WIDTH=256&HEIGHT=256&FORMAT=image/png`
 - `GET /wfs?SERVICE=WFS&REQUEST=GetCapabilities` — WFS capabilities
 - `GET /wfs?SERVICE=WFS&REQUEST=GetFeature&TYPENAMES=roads&COUNT=10`
+- `GET /wmts?SERVICE=WMTS&REQUEST=GetCapabilities` — WMTS capabilities
+- `GET /wmts?SERVICE=WMTS&REQUEST=GetTile&LAYER=...&TILEMATRIX=...&TILEROW=0&TILECOL=0`
+- `GET /ogc/` — OGC API landing page
+- `GET /ogc/conformance` — Conformance declaration
+- `GET /ogc/collections` — List feature collections
+- `GET /ogc/collections/{id}/items` — Query features with bbox, limit, offset
+
+## Architecture
+
+```
+fenestra-core    — OGC protocol implementations (WMS, WFS, WMTS, OGC API, SLD)
+fenestra-cli     — HTTP server and CLI
+```
 
 ## License
 
