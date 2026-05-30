@@ -2,15 +2,16 @@
 //!
 //! Protocol implementations for WMS, WFS, WMTS, WCS, and OGC API Features.
 //! Provides request parsing, capability document generation,
-//! and response formatting.
+//! server-side map rendering, and response formatting.
 
 pub mod capabilities;
 mod config;
 mod error;
 pub mod ogcapi;
+pub mod renderer;
 pub mod sld;
 mod wfs;
-mod wms;
+pub mod wms;
 mod wmts;
 
 pub use capabilities::ServiceMetadata;
