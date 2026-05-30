@@ -7,9 +7,20 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+vello = ["dep:jung-core", "dep:jung-style", "dep:jung-vello", "dep:vello", "dep:pollster"]
+
 [dependencies]
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tiny-skia = "0.11"
 png = "0.17"
+
+# GPU rendering (optional)
+jung-core = { path = "../../../jung/crates/jung-core", optional = true }
+jung-style = { path = "../../../jung/crates/jung-style", optional = true }
+jung-vello = { path = "../../../jung/crates/jung-vello", optional = true }
+vello = { version = "0.9", optional = true }
+pollster = { version = "0.4", optional = true }
