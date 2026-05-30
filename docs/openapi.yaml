@@ -1,0 +1,95 @@
+openapi: 3.1.0
+info:
+  title: Fenestra OGC API
+  version: 0.1.0
+  description: OGC API Features/Tiles/Processes server.
+  license:
+    name: AGPL-3.0-or-later
+    url: https://www.gnu.org/licenses/agpl-3.0.html
+  contact:
+    email: tiletopia@proton.me
+
+servers:
+  - url: http://localhost:3003
+    description: Local development
+
+paths:
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: Service is healthy
+
+  /wms:
+    get:
+      summary: WMS endpoint
+      description: Web Map Service (OGC WMS 1.3.0) GetMap/GetCapabilities.
+      parameters:
+        - name: SERVICE
+          in: query
+          schema:
+            type: string
+            default: WMS
+        - name: REQUEST
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [GetCapabilities, GetMap, GetFeatureInfo]
+        - name: LAYERS
+          in: query
+          schema:
+            type: string
+        - name: BBOX
+          in: query
+          schema:
+            type: string
+        - name: WIDTH
+          in: query
+          schema:
+            type: integer
+        - name: HEIGHT
+          in: query
+          schema:
+            type: integer
+        - name: FORMAT
+          in: query
+          schema:
+            type: string
+            default: image/png
+      responses:
+        '200':
+          description: Map image or capabilities XML
+
+  /wfs:
+    get:
+      summary: WFS endpoint
+      description: Web Feature Service (OGC WFS 2.0) GetFeature/GetCapabilities.
+      parameters:
+        - name: SERVICE
+          in: query
+          schema:
+            type: string
+            default: WFS
+        - name: REQUEST
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [GetCapabilities, GetFeature, DescribeFeatureType]
+        - name: TYPENAME
+          in: query
+          schema:
+            type: string
+        - name: BBOX
+          in: query
+          schema:
+            type: string
+        - name: MAXFEATURES
+          in: query
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: GeoJSON features or capabilities XML
