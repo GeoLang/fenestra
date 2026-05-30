@@ -1,8 +1,8 @@
 # Fenestra
 
-OGC services gateway for the TileTopia-HQ GIS stack.
+OGC services gateway for the GeoLang GIS stack.
 
-[Documentation](https://tiletopia-hq.github.io/fenestra/) · [GitHub](https://github.com/TileTopia-HQ/fenestra)
+[Documentation](https://geolang.github.io/fenestra/) · [GitHub](https://github.com/GeoLang/fenestra)
 
 ## Features
 
