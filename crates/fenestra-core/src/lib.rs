@@ -8,6 +8,7 @@
 pub mod capabilities;
 mod config;
 mod error;
+pub mod mvt;
 pub mod ogcapi;
 pub mod processes;
 pub mod renderer;
