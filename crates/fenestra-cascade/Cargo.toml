@@ -1,0 +1,17 @@
+[package]
+name = "fenestra-cascade"
+description = "Cascading WMS/WMTS plugin — proxy and cache remote map services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fenestra-core.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json"] }
+tracing = "0.1"
+tokio = { version = "1", features = ["full"] }
+url = "2"

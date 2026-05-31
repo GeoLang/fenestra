@@ -10,6 +10,7 @@ mod config;
 mod error;
 pub mod mvt;
 pub mod ogcapi;
+pub mod plugin;
 pub mod processes;
 pub mod renderer;
 pub mod sld;
@@ -25,6 +26,10 @@ pub use error::Error;
 pub use ogcapi::{
     BboxFilter, CollectionInfo, ConformanceDeclaration, Feature, FeatureCollection, Geometry,
     LandingPage, Link, paginate_features,
+};
+pub use plugin::{
+    BoxFuture, HookOutcome, HookPhase, Plugin, PluginError, PluginManifest, PluginRegistry,
+    PluginResult, RequestContext, ResponseContext, UserIdentity,
 };
 pub use sld::{
     Fill, Graphic, LineSymbolizer, Mark, NamedLayer, PointSymbolizer, PolygonSymbolizer, Rule,

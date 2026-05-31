@@ -1,0 +1,17 @@
+[package]
+name = "fenestra-printing"
+description = "Map printing plugin — PDF/PNG cartographic output (MapFish Print equivalent)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fenestra-core.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+printpdf = "0.8"
+tiny-skia = "0.11"
+uuid = { version = "1", features = ["v4"] }

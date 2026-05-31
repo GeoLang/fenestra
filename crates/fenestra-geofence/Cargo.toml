@@ -1,0 +1,16 @@
+[package]
+name = "fenestra-geofence"
+description = "Spatial access control plugin — fine-grained per-layer/per-feature authorization"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+fenestra-core.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tokio = { version = "1", features = ["sync"] }
+geo = "0.29"

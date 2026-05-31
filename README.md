@@ -1,19 +1,21 @@
 # Fenestra
 
-OGC services gateway for the GeoLang GIS stack.
+OGC services gateway for the GeoLang GIS stack — the GeoServer-equivalent component.
 
 [Documentation](https://geolang.github.io/fenestra/) · [GitHub](https://github.com/GeoLang/fenestra)
 
 ## Features
 
-- **WMS** — GetCapabilities (XML 1.3.0), GetMap request parsing with CRS/BBOX validation
+- **WMS** — GetCapabilities (XML 1.3.0), GetMap with server-side rendering (SLD styles → PNG/JPEG)
 - **WFS** — GetCapabilities (XML 2.0.0), GetFeature with bbox filtering, GeoJSON response, feature count limiting
 - **WMTS** — GetCapabilities, GetTile request parsing, tile matrix set definitions
 - **OGC API Features** — Landing page, conformance, collections, feature CRUD, bbox filtering, pagination
+- **Server-Side Map Rendering** — CPU (tiny-skia) and GPU (Vello/wgpu) backends for rendering styled maps to images
 - **SLD/SE styling** — Parse Styled Layer Descriptors: NamedLayer, Rules, PointSymbolizer, LineSymbolizer, PolygonSymbolizer, TextSymbolizer, Fill, Stroke, Graphic, Mark
 - **HTTP server** — Axum-based, async, production-ready with configurable host/port
 - **Configuration** — JSON-based layer config with per-layer CRS, BBOX, and data source paths
 - **MVT encoding** — Mapbox Vector Tile binary encoding with geometry command sequences, tile-coordinate scaling, and tag interning
+- **Platform Integration** — Proxies to Ptolemy for feature data, part of `docker-compose.platform.yml`
 
 ## Usage
 
