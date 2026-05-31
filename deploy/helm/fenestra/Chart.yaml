@@ -1,0 +1,13 @@
+apiVersion: v2
+name: fenestra
+description: OGC WMS/WFS services gateway
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - ogc
+  - wms
+  - wfs
+  - geospatial
+maintainers:
+  - name: GeoLang

@@ -1,0 +1,36 @@
+replicaCount: 1
+
+image:
+  repository: fenestra
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+service:
+  type: ClusterIP
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: fenestra.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+
+env:
+  RUST_LOG: "info,fenestra=debug"
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

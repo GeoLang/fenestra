@@ -1,9 +1,13 @@
-use axum::{Router, extract::Query, response::IntoResponse, routing::get};
+mod auth;
+mod metrics;
+
+use axum::{Router, extract::Query, middleware, response::IntoResponse, routing::get};
 use clap::{Parser, Subcommand};
 use fenestra_core::{
     ServiceConfig, WfsGetFeatureRequest, WfsResponse, WmsGetMapRequest, WmsResponse,
 };
 use serde::Deserialize;
+use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 #[derive(Parser)]
@@ -43,6 +47,7 @@ struct WmsQuery {
 }
 
 async fn wms_handler(Query(params): Query<WmsQuery>) -> impl IntoResponse {
+    ::metrics::counter!("fenestra_wms_requests").increment(1);
     let request_type = params.request.as_deref().unwrap_or("GetCapabilities");
     match request_type {
         "GetCapabilities" => {
@@ -83,6 +88,7 @@ struct WfsQuery {
 }
 
 async fn wfs_handler(Query(params): Query<WfsQuery>) -> impl IntoResponse {
+    ::metrics::counter!("fenestra_wfs_requests").increment(1);
     let request_type = params.request.as_deref().unwrap_or("GetCapabilities");
     match request_type {
         "GetCapabilities" => {
@@ -123,11 +129,18 @@ async fn main() {
                 )
                 .init();
 
+            metrics::install();
+
             let app = Router::new()
                 .route("/health", get(health))
+                .route("/healthz", get(liveness))
+                .route("/readyz", get(readiness))
+                .route("/metrics", get(metrics::metrics_handler))
                 .route("/wms", get(wms_handler))
                 .route("/wfs", get(wfs_handler))
-                .layer(TraceLayer::new_for_http());
+                .layer(middleware::from_fn(auth::auth_middleware))
+                .layer(TraceLayer::new_for_http())
+                .layer(CorsLayer::permissive());
 
             let addr = format!("{host}:{port}");
             println!("Fenestra OGC server listening on {addr}");
@@ -142,4 +155,12 @@ async fn main() {
             );
         }
     }
+}
+
+async fn liveness() -> &'static str {
+    "ok"
+}
+
+async fn readiness() -> &'static str {
+    "ready"
 }
