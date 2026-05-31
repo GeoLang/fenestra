@@ -19,8 +19,8 @@ tiny-skia = "0.11"
 png = "0.17"
 
 # GPU rendering (optional)
-jung-core = { path = "../../../jung/crates/jung-core", optional = true }
-jung-style = { path = "../../../jung/crates/jung-style", optional = true }
-jung-vello = { path = "../../../jung/crates/jung-vello", optional = true }
+jung-core = { git = "https://github.com/GeoLang/jung.git", tag = "v0.1.0", optional = true }
+jung-style = { git = "https://github.com/GeoLang/jung.git", tag = "v0.1.0", optional = true }
+jung-vello = { git = "https://github.com/GeoLang/jung.git", tag = "v0.1.0", optional = true }
 vello = { version = "0.9", optional = true }
 pollster = { version = "0.4", optional = true }
