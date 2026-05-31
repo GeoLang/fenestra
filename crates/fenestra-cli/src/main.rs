@@ -4,6 +4,7 @@ use fenestra_core::{
     ServiceConfig, WfsGetFeatureRequest, WfsResponse, WmsGetMapRequest, WmsResponse,
 };
 use serde::Deserialize;
+use tower_http::trace::TraceLayer;
 
 #[derive(Parser)]
 #[command(name = "fenestra", version, about = "OGC services gateway")]
@@ -115,10 +116,18 @@ async fn main() {
     let cli = Cli::parse();
     match cli.command {
         Commands::Serve { host, port } => {
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::from_default_env()
+                        .add_directive("fenestra=info".parse().unwrap()),
+                )
+                .init();
+
             let app = Router::new()
                 .route("/health", get(health))
                 .route("/wms", get(wms_handler))
-                .route("/wfs", get(wfs_handler));
+                .route("/wfs", get(wfs_handler))
+                .layer(TraceLayer::new_for_http());
 
             let addr = format!("{host}:{port}");
             println!("Fenestra OGC server listening on {addr}");
