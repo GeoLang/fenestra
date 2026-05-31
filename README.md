@@ -13,6 +13,7 @@ OGC services gateway for the GeoLang GIS stack.
 - **SLD/SE styling** — Parse Styled Layer Descriptors: NamedLayer, Rules, PointSymbolizer, LineSymbolizer, PolygonSymbolizer, TextSymbolizer, Fill, Stroke, Graphic, Mark
 - **HTTP server** — Axum-based, async, production-ready with configurable host/port
 - **Configuration** — JSON-based layer config with per-layer CRS, BBOX, and data source paths
+- **MVT encoding** — Mapbox Vector Tile binary encoding with geometry command sequences, tile-coordinate scaling, and tag interning
 
 ## Usage
 
