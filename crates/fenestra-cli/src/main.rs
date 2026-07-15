@@ -1,14 +1,8 @@
-mod auth;
-mod metrics;
-
-use axum::{Router, extract::Query, middleware, response::IntoResponse, routing::get};
 use clap::{Parser, Subcommand};
-use fenestra_core::{
-    ServiceConfig, WfsGetFeatureRequest, WfsResponse, WmsGetMapRequest, WmsResponse,
-};
-use serde::Deserialize;
-use tower_http::cors::CorsLayer;
-use tower_http::trace::TraceLayer;
+use fenestra_cli::source::PtolemyFeatureSource;
+use fenestra_cli::{AppState, build_router, metrics};
+use fenestra_core::ServiceConfig;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(name = "fenestra", version, about = "OGC services gateway")]
@@ -32,91 +26,6 @@ enum Commands {
     Config,
 }
 
-#[derive(Deserialize)]
-struct WmsQuery {
-    #[allow(dead_code)]
-    service: Option<String>,
-    request: Option<String>,
-    layers: Option<String>,
-    styles: Option<String>,
-    crs: Option<String>,
-    bbox: Option<String>,
-    width: Option<u32>,
-    height: Option<u32>,
-    format: Option<String>,
-}
-
-async fn wms_handler(Query(params): Query<WmsQuery>) -> impl IntoResponse {
-    ::metrics::counter!("fenestra_wms_requests").increment(1);
-    let request_type = params.request.as_deref().unwrap_or("GetCapabilities");
-    match request_type {
-        "GetCapabilities" => {
-            let config = ServiceConfig::default();
-            let xml = fenestra_core::capabilities::wms_capabilities_xml(&config);
-            ([("content-type", "application/xml")], xml)
-        }
-        "GetMap" => {
-            let _req = WmsGetMapRequest {
-                layers: params.layers.unwrap_or_default(),
-                styles: params.styles.unwrap_or_default(),
-                crs: params.crs.unwrap_or_else(|| "EPSG:4326".to_string()),
-                bbox: params.bbox.unwrap_or_else(|| "0,0,1,1".to_string()),
-                width: params.width.unwrap_or(256),
-                height: params.height.unwrap_or(256),
-                format: params.format.unwrap_or_else(|| "image/png".to_string()),
-            };
-            let _response = WmsResponse::placeholder(256, 256);
-            (
-                [("content-type", "text/plain")],
-                "GetMap placeholder — no renderer configured".to_string(),
-            )
-        }
-        _ => (
-            [("content-type", "text/plain")],
-            format!("Unsupported WMS request: {request_type}"),
-        ),
-    }
-}
-
-#[derive(Deserialize)]
-struct WfsQuery {
-    request: Option<String>,
-    type_names: Option<String>,
-    count: Option<u32>,
-    bbox: Option<String>,
-    output_format: Option<String>,
-}
-
-async fn wfs_handler(Query(params): Query<WfsQuery>) -> impl IntoResponse {
-    ::metrics::counter!("fenestra_wfs_requests").increment(1);
-    let request_type = params.request.as_deref().unwrap_or("GetCapabilities");
-    match request_type {
-        "GetCapabilities" => {
-            let config = ServiceConfig::default();
-            let xml = fenestra_core::capabilities::wfs_capabilities_xml(&config);
-            ([("content-type", "application/xml")], xml)
-        }
-        "GetFeature" => {
-            let _req = WfsGetFeatureRequest {
-                type_names: params.type_names.unwrap_or_default(),
-                count: params.count,
-                bbox: params.bbox,
-                output_format: params.output_format,
-            };
-            let response = WfsResponse::empty_geojson();
-            ([("content-type", "application/geo+json")], response.body)
-        }
-        _ => (
-            [("content-type", "text/plain")],
-            format!("Unsupported WFS request: {request_type}"),
-        ),
-    }
-}
-
-async fn health() -> &'static str {
-    "OK"
-}
-
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
@@ -131,16 +40,12 @@ async fn main() {
 
             metrics::install();
 
-            let app = Router::new()
-                .route("/health", get(health))
-                .route("/healthz", get(liveness))
-                .route("/readyz", get(readiness))
-                .route("/metrics", get(metrics::metrics_handler))
-                .route("/wms", get(wms_handler))
-                .route("/wfs", get(wfs_handler))
-                .layer(middleware::from_fn(auth::auth_middleware))
-                .layer(TraceLayer::new_for_http())
-                .layer(CorsLayer::permissive());
+            let source = Arc::new(PtolemyFeatureSource::from_env());
+            let state = AppState {
+                source,
+                base_url: format!("http://{host}:{port}"),
+            };
+            let app = build_router(state);
 
             let addr = format!("{host}:{port}");
             println!("Fenestra OGC server listening on {addr}");
@@ -155,12 +60,4 @@ async fn main() {
             );
         }
     }
-}
-
-async fn liveness() -> &'static str {
-    "ok"
-}
-
-async fn readiness() -> &'static str {
-    "ready"
 }
