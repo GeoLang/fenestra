@@ -1,5 +1,6 @@
-//! Axum request handlers for WMS, WFS, WMTS, and OGC API Features.
+//! Axum request handlers for WMS, WFS, WMTS, WCS, and OGC API Features.
 
+use crate::coverage::{CoverageError, bbox_of, crop};
 use crate::render::{Crs, bbox_to_4326, build_layer, parse_crs, resolve_style};
 use crate::source::Collection;
 use crate::{AppState, metrics_counter};
@@ -297,6 +298,216 @@ async fn render_tile(state: &AppState, layer: &str, matrix: &str, row: u32, col:
         resolve_style(None, layer),
     )];
     png_response(render_map(&request, &render_layers))
+}
+
+// ─── WCS ─────────────────────────────────────────────────────────────────────
+
+fn tiff_response(bytes: Vec<u8>) -> Response {
+    ([("content-type", "image/tiff")], bytes).into_response()
+}
+
+/// OWS ExceptionReport response, the WCS error convention.
+fn wcs_exception(
+    status: StatusCode,
+    code: &str,
+    locator: &str,
+    message: impl std::fmt::Display,
+) -> Response {
+    (
+        status,
+        [("content-type", "application/xml")],
+        fenestra_core::ows_exception_xml(code, locator, &message.to_string()),
+    )
+        .into_response()
+}
+
+fn coverage_error_response(err: CoverageError) -> Response {
+    match err {
+        CoverageError::NotFound(id) => wcs_exception(
+            StatusCode::NOT_FOUND,
+            "NoSuchCoverage",
+            "coverageId",
+            format!("coverage {id} not found"),
+        ),
+        other => wcs_exception(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "NoApplicableCode",
+            "coverageId",
+            other,
+        ),
+    }
+}
+
+/// True when `given` names the same CRS as native `EPSG:<code>`.
+fn crs_matches(native: &str, given: &str) -> bool {
+    let code = native.strip_prefix("EPSG:").unwrap_or(native);
+    let given = given.to_ascii_lowercase();
+    given == native.to_ascii_lowercase()
+        || given == format!("http://www.opengis.net/def/crs/epsg/0/{code}")
+        || given == format!("urn:ogc:def:crs:epsg::{code}")
+}
+
+// WCS KVP allows repeated SUBSET parameters, so this handler extracts query
+// pairs instead of a map.
+pub async fn wcs(
+    State(state): State<AppState>,
+    Query(pairs): Query<Vec<(String, String)>>,
+) -> Response {
+    metrics_counter("fenestra_wcs_requests");
+    let subsets: Vec<String> = pairs
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("subset"))
+        .map(|(_, v)| v.clone())
+        .collect();
+    let kvp = Kvp::new(pairs.into_iter().collect());
+    match kvp.get("request").unwrap_or("GetCapabilities") {
+        "GetCapabilities" => {
+            let ids = state.coverages.ids();
+            let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+            let title = fenestra_core::ServiceConfig::default().title;
+            xml_response(fenestra_core::wcs_capabilities_xml(&title, &refs))
+        }
+        "DescribeCoverage" => describe_coverage(&state, &kvp),
+        "GetCoverage" => get_coverage(&state, &kvp, &subsets),
+        other => wcs_exception(
+            StatusCode::BAD_REQUEST,
+            "OperationNotSupported",
+            "request",
+            format!("Unsupported WCS request: {other}"),
+        ),
+    }
+}
+
+fn describe_coverage(state: &AppState, kvp: &Kvp) -> Response {
+    let Some(ids) = kvp.get("coverageid") else {
+        return wcs_exception(
+            StatusCode::BAD_REQUEST,
+            "MissingParameterValue",
+            "coverageId",
+            "COVERAGEID is required",
+        );
+    };
+    let mut descriptions = Vec::new();
+    for id in ids.split(',').filter(|s| !s.is_empty()) {
+        match state.coverages.describe(id) {
+            Ok(desc) => descriptions.push(desc),
+            Err(e) => return coverage_error_response(e),
+        }
+    }
+    xml_response(fenestra_core::describe_coverage_xml(&descriptions))
+}
+
+fn get_coverage(state: &AppState, kvp: &Kvp, subsets: &[String]) -> Response {
+    let Some(coverage_id) = kvp.get("coverageid") else {
+        return wcs_exception(
+            StatusCode::BAD_REQUEST,
+            "MissingParameterValue",
+            "coverageId",
+            "COVERAGEID is required",
+        );
+    };
+    if let Some(format) = kvp.get("format")
+        && !format.eq_ignore_ascii_case("image/tiff")
+    {
+        return wcs_exception(
+            StatusCode::BAD_REQUEST,
+            "InvalidParameterValue",
+            "format",
+            format!("unsupported format {format}, only image/tiff"),
+        );
+    }
+    for unsupported in ["scalefactor", "scaleaxes", "scalesize", "interpolation"] {
+        if kvp.get(unsupported).is_some() {
+            return wcs_exception(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterValue",
+                unsupported,
+                format!("{unsupported} is not supported"),
+            );
+        }
+    }
+
+    let (raster, meta) = match state.coverages.read(coverage_id) {
+        Ok(v) => v,
+        Err(e) => return coverage_error_response(e),
+    };
+    let native_crs = crate::coverage::crs_string(meta.epsg);
+    for crs_param in ["subsettingcrs", "outputcrs"] {
+        if let Some(crs) = kvp.get(crs_param)
+            && !crs_matches(&native_crs, crs)
+        {
+            return wcs_exception(
+                StatusCode::BAD_REQUEST,
+                "InvalidParameterValue",
+                crs_param,
+                format!("unsupported CRS {crs}, native CRS is {native_crs}"),
+            );
+        }
+    }
+
+    let mut request = fenestra_core::WcsGetCoverageRequest {
+        coverage_id: coverage_id.to_string(),
+        format: "image/tiff".to_string(),
+        subset_x: None,
+        subset_y: None,
+        subset_time: None,
+        scale_factor: None,
+        range_subset: None,
+        interpolation: None,
+    };
+    for subset in subsets {
+        let (axis, spec) = match fenestra_core::parse_subset(subset) {
+            Ok(parsed) => parsed,
+            Err(fenestra_core::Error::InvalidAxisLabel(label)) => {
+                return wcs_exception(
+                    StatusCode::NOT_FOUND,
+                    "InvalidAxisLabel",
+                    "subset",
+                    format!("unknown axis {label}"),
+                );
+            }
+            Err(e) => {
+                return wcs_exception(StatusCode::NOT_FOUND, "InvalidSubsetting", "subset", e);
+            }
+        };
+        let slot = match axis {
+            fenestra_core::SubsetAxis::X => &mut request.subset_x,
+            fenestra_core::SubsetAxis::Y => &mut request.subset_y,
+        };
+        if slot.is_some() {
+            return wcs_exception(
+                StatusCode::NOT_FOUND,
+                "InvalidSubsetting",
+                "subset",
+                "duplicate subset axis",
+            );
+        }
+        *slot = Some(spec);
+    }
+    if let Err(e) = request.validate() {
+        return wcs_exception(
+            StatusCode::BAD_REQUEST,
+            "InvalidParameterValue",
+            "request",
+            e,
+        );
+    }
+
+    let bbox = request.effective_bbox(&bbox_of(&raster, &meta));
+    let (out_raster, out_meta) = match crop(&raster, &meta, bbox) {
+        Ok(v) => v,
+        Err(e) => return wcs_exception(StatusCode::NOT_FOUND, "InvalidSubsetting", "subset", e),
+    };
+    let mut bytes = Vec::new();
+    match terrano_core::write_geotiff(&out_raster, &out_meta, &mut bytes) {
+        Ok(()) => tiff_response(bytes),
+        Err(e) => wcs_exception(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "NoApplicableCode",
+            "coverageId",
+            e,
+        ),
+    }
 }
 
 // ─── OGC API Features ────────────────────────────────────────────────────────

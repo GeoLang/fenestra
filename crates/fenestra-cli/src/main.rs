@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use fenestra_cli::coverage::CoverageCatalog;
 use fenestra_cli::source::PtolemyFeatureSource;
 use fenestra_cli::{AppState, build_router, metrics};
 use fenestra_core::ServiceConfig;
@@ -43,6 +44,7 @@ async fn main() {
             let source = Arc::new(PtolemyFeatureSource::from_env());
             let state = AppState {
                 source,
+                coverages: Arc::new(CoverageCatalog::from_env()),
                 base_url: format!("http://{host}:{port}"),
             };
             let app = build_router(state);

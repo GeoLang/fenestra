@@ -35,6 +35,10 @@ pub use sld::{
     Fill, Graphic, LineSymbolizer, Mark, NamedLayer, PointSymbolizer, PolygonSymbolizer, Rule,
     Stroke, Style, StyledLayerDescriptor, Symbolizer, TextSymbolizer, parse_sld,
 };
+pub use wcs::{
+    CoverageDescription, RangeField, SubsetAxis, SubsetSpec, WcsGetCoverageRequest,
+    describe_coverage_xml, ows_exception_xml, parse_subset, wcs_capabilities_xml,
+};
 pub use wfs::{WfsGetFeatureRequest, WfsResponse};
 pub use wms::{WmsGetMapRequest, WmsResponse};
 pub use wmts::{WmtsGetTileRequest, WmtsResponse, wmts_capabilities_xml};

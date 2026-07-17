@@ -11,6 +11,9 @@ pub enum Error {
     #[error("unsupported CRS: {0}")]
     UnsupportedCrs(String),
 
+    #[error("invalid axis label: {0}")]
+    InvalidAxisLabel(String),
+
     #[error("unsupported format: {0}")]
     UnsupportedFormat(String),
 

@@ -23,6 +23,189 @@ pub enum SubsetSpec {
     Slice(f64),
 }
 
+/// Spatial axis addressed by a KVP subset parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubsetAxis {
+    X,
+    Y,
+}
+
+/// Parse a WCS 2.0 KVP subset value: `x(10,20)`, `Lat(49.5)`, `x(*,20)`.
+///
+/// `*` means an open trim bound and maps to an infinite value; callers clamp
+/// to the coverage extent. `x`/`y` are always accepted as easting/northing
+/// grid axes, even for EPSG:4326 where the advertised labels are Lat/Long.
+pub fn parse_subset(value: &str) -> Result<(SubsetAxis, SubsetSpec), Error> {
+    let invalid = || Error::InvalidRequest(format!("invalid subset: {value}"));
+    let open = value.find('(').ok_or_else(invalid)?;
+    if !value.ends_with(')') {
+        return Err(invalid());
+    }
+    let axis = match value[..open].trim().to_ascii_lowercase().as_str() {
+        "x" | "long" | "lon" | "e" | "i" => SubsetAxis::X,
+        "y" | "lat" | "n" | "j" => SubsetAxis::Y,
+        other => return Err(Error::InvalidAxisLabel(other.to_string())),
+    };
+    let bounds: Vec<&str> = value[open + 1..value.len() - 1]
+        .split(',')
+        .map(str::trim)
+        .collect();
+    let trim_bound = |s: &str, open_value: f64| -> Result<f64, Error> {
+        if s == "*" {
+            Ok(open_value)
+        } else {
+            s.parse().map_err(|_| invalid())
+        }
+    };
+    let spec = match bounds.as_slice() {
+        [point] => SubsetSpec::Slice(point.parse().map_err(|_| invalid())?),
+        [low, high] => SubsetSpec::Trim {
+            low: trim_bound(low, f64::NEG_INFINITY)?,
+            high: trim_bound(high, f64::INFINITY)?,
+        },
+        _ => return Err(invalid()),
+    };
+    Ok((axis, spec))
+}
+
+/// EPSG-style CRS string (`EPSG:4326`) to an OGC CRS URI for srsName.
+fn crs_uri(crs: &str) -> String {
+    match crs.strip_prefix("EPSG:") {
+        Some(code) => format!("http://www.opengis.net/def/crs/EPSG/0/{code}"),
+        None => crs.to_string(),
+    }
+}
+
+/// Generate a WCS 2.0.1 GetCapabilities XML document.
+pub fn wcs_capabilities_xml(title: &str, coverage_ids: &[&str]) -> String {
+    let mut xml = String::new();
+    xml.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
+    xml.push('\n');
+    xml.push_str(concat!(
+        r#"<wcs:Capabilities version="2.0.1" xmlns:wcs="http://www.opengis.net/wcs/2.0""#,
+        r#" xmlns:ows="http://www.opengis.net/ows/2.0">"#,
+    ));
+    xml.push('\n');
+    xml.push_str("  <ows:ServiceIdentification>\n");
+    xml.push_str(&format!("    <ows:Title>{title}</ows:Title>\n"));
+    xml.push_str("    <ows:ServiceType>OGC WCS</ows:ServiceType>\n");
+    xml.push_str("    <ows:ServiceTypeVersion>2.0.1</ows:ServiceTypeVersion>\n");
+    xml.push_str("  </ows:ServiceIdentification>\n");
+    xml.push_str("  <wcs:ServiceMetadata>\n");
+    xml.push_str("    <wcs:formatSupported>image/tiff</wcs:formatSupported>\n");
+    xml.push_str("  </wcs:ServiceMetadata>\n");
+    xml.push_str("  <wcs:Contents>\n");
+    for id in coverage_ids {
+        xml.push_str("    <wcs:CoverageSummary>\n");
+        xml.push_str(&format!("      <wcs:CoverageId>{id}</wcs:CoverageId>\n"));
+        xml.push_str("      <wcs:CoverageSubtype>RectifiedGridCoverage</wcs:CoverageSubtype>\n");
+        xml.push_str("    </wcs:CoverageSummary>\n");
+    }
+    xml.push_str("  </wcs:Contents>\n");
+    xml.push_str("</wcs:Capabilities>\n");
+    xml
+}
+
+/// Generate a WCS 2.0.1 DescribeCoverage XML document.
+pub fn describe_coverage_xml(descriptions: &[CoverageDescription]) -> String {
+    let mut xml = String::new();
+    xml.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
+    xml.push('\n');
+    xml.push_str(concat!(
+        r#"<wcs:CoverageDescriptions xmlns:wcs="http://www.opengis.net/wcs/2.0""#,
+        r#" xmlns:gml="http://www.opengis.net/gml/3.2""#,
+        r#" xmlns:swe="http://www.opengis.net/swe/2.0">"#,
+    ));
+    xml.push('\n');
+    for desc in descriptions {
+        let id = &desc.coverage_id;
+        let [min_x, min_y, max_x, max_y] = desc.bbox;
+        // EPSG:4326 mandates latitude-first axis order, so the envelope
+        // corners swap; the bbox itself stays x/y ordered internally.
+        let (axis_labels, lower, upper) = if desc.crs == "EPSG:4326" {
+            ("Lat Long", (min_y, min_x), (max_y, max_x))
+        } else {
+            ("x y", (min_x, min_y), (max_x, max_y))
+        };
+        xml.push_str(&format!("  <wcs:CoverageDescription gml:id=\"{id}\">\n"));
+        xml.push_str("    <gml:boundedBy>\n");
+        xml.push_str(&format!(
+            "      <gml:Envelope srsName=\"{}\" axisLabels=\"{axis_labels}\" srsDimension=\"2\">\n",
+            crs_uri(&desc.crs)
+        ));
+        xml.push_str(&format!(
+            "        <gml:lowerCorner>{} {}</gml:lowerCorner>\n",
+            lower.0, lower.1
+        ));
+        xml.push_str(&format!(
+            "        <gml:upperCorner>{} {}</gml:upperCorner>\n",
+            upper.0, upper.1
+        ));
+        xml.push_str("      </gml:Envelope>\n");
+        xml.push_str("    </gml:boundedBy>\n");
+        xml.push_str(&format!("    <wcs:CoverageId>{id}</wcs:CoverageId>\n"));
+        xml.push_str("    <gml:domainSet>\n");
+        xml.push_str(&format!(
+            "      <gml:RectifiedGrid dimension=\"2\" gml:id=\"{id}-grid\">\n"
+        ));
+        xml.push_str("        <gml:limits>\n");
+        xml.push_str("          <gml:GridEnvelope>\n");
+        xml.push_str("            <gml:low>0 0</gml:low>\n");
+        xml.push_str(&format!(
+            "            <gml:high>{} {}</gml:high>\n",
+            desc.grid_size[0].saturating_sub(1),
+            desc.grid_size[1].saturating_sub(1)
+        ));
+        xml.push_str("          </gml:GridEnvelope>\n");
+        xml.push_str("        </gml:limits>\n");
+        xml.push_str("      </gml:RectifiedGrid>\n");
+        xml.push_str("    </gml:domainSet>\n");
+        xml.push_str("    <gml:rangeType>\n");
+        xml.push_str("      <swe:DataRecord>\n");
+        for field in &desc.range_type {
+            xml.push_str(&format!("        <swe:field name=\"{}\">\n", field.name));
+            xml.push_str(&format!(
+                "          <swe:Quantity><swe:description>{}</swe:description></swe:Quantity>\n",
+                field.data_type
+            ));
+            xml.push_str("        </swe:field>\n");
+        }
+        xml.push_str("      </swe:DataRecord>\n");
+        xml.push_str("    </gml:rangeType>\n");
+        xml.push_str("    <wcs:ServiceParameters>\n");
+        xml.push_str("      <wcs:CoverageSubtype>RectifiedGridCoverage</wcs:CoverageSubtype>\n");
+        xml.push_str(&format!(
+            "      <wcs:nativeFormat>{}</wcs:nativeFormat>\n",
+            desc.native_format
+        ));
+        xml.push_str("    </wcs:ServiceParameters>\n");
+        xml.push_str("  </wcs:CoverageDescription>\n");
+    }
+    xml.push_str("</wcs:CoverageDescriptions>\n");
+    xml
+}
+
+/// Generate an OWS 2.0 ExceptionReport XML document.
+pub fn ows_exception_xml(code: &str, locator: &str, message: &str) -> String {
+    let mut xml = String::new();
+    xml.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
+    xml.push('\n');
+    xml.push_str(concat!(
+        r#"<ows:ExceptionReport version="2.0.0""#,
+        r#" xmlns:ows="http://www.opengis.net/ows/2.0">"#,
+    ));
+    xml.push('\n');
+    xml.push_str(&format!(
+        "  <ows:Exception exceptionCode=\"{code}\" locator=\"{locator}\">\n"
+    ));
+    xml.push_str(&format!(
+        "    <ows:ExceptionText>{message}</ows:ExceptionText>\n"
+    ));
+    xml.push_str("  </ows:Exception>\n");
+    xml.push_str("</ows:ExceptionReport>\n");
+    xml
+}
+
 /// Interpolation methods for resampling coverages.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub enum Interpolation {
@@ -148,6 +331,72 @@ mod tests {
         };
         let full = [-180.0, -90.0, 180.0, 90.0];
         assert_eq!(req.effective_bbox(&full), [10.0, 40.0, 20.0, 50.0]);
+    }
+
+    #[test]
+    fn test_parse_subset_trim_and_slice() {
+        let (axis, spec) = parse_subset("x(10,20)").unwrap();
+        assert_eq!(axis, SubsetAxis::X);
+        assert!(matches!(spec, SubsetSpec::Trim { low, high } if low == 10.0 && high == 20.0));
+
+        let (axis, spec) = parse_subset("Lat(49.5)").unwrap();
+        assert_eq!(axis, SubsetAxis::Y);
+        assert!(matches!(spec, SubsetSpec::Slice(v) if v == 49.5));
+
+        let (_, spec) = parse_subset("x(*,20)").unwrap();
+        assert!(
+            matches!(spec, SubsetSpec::Trim { low, high } if low.is_infinite() && high == 20.0)
+        );
+    }
+
+    #[test]
+    fn test_parse_subset_errors() {
+        assert!(matches!(
+            parse_subset("time(1,2)"),
+            Err(Error::InvalidAxisLabel(_))
+        ));
+        assert!(parse_subset("x(1,2,3)").is_err());
+        assert!(parse_subset("x").is_err());
+        assert!(parse_subset("x(abc)").is_err());
+    }
+
+    #[test]
+    fn test_wcs_capabilities_lists_coverages() {
+        let xml = wcs_capabilities_xml("Test", &["dem", "temp"]);
+        assert!(xml.contains("<wcs:CoverageId>dem</wcs:CoverageId>"));
+        assert!(xml.contains("<wcs:CoverageId>temp</wcs:CoverageId>"));
+        assert!(xml.contains("version=\"2.0.1\""));
+    }
+
+    #[test]
+    fn test_describe_coverage_envelope_axis_order() {
+        let desc = |crs: &str| CoverageDescription {
+            coverage_id: "dem".to_string(),
+            crs: crs.to_string(),
+            bbox: [10.0, 48.5, 12.0, 50.0],
+            grid_size: [4, 3],
+            range_type: Vec::new(),
+            native_format: "image/tiff".to_string(),
+        };
+
+        // EPSG:4326 is latitude-first
+        let xml = describe_coverage_xml(&[desc("EPSG:4326")]);
+        assert!(xml.contains("axisLabels=\"Lat Long\""));
+        assert!(xml.contains("<gml:lowerCorner>48.5 10</gml:lowerCorner>"));
+        assert!(xml.contains("<gml:upperCorner>50 12</gml:upperCorner>"));
+
+        // projected CRS stays x/y
+        let xml = describe_coverage_xml(&[desc("EPSG:32632")]);
+        assert!(xml.contains("axisLabels=\"x y\""));
+        assert!(xml.contains("<gml:lowerCorner>10 48.5</gml:lowerCorner>"));
+        assert!(xml.contains("<gml:upperCorner>12 50</gml:upperCorner>"));
+    }
+
+    #[test]
+    fn test_ows_exception_xml() {
+        let xml = ows_exception_xml("NoSuchCoverage", "coverageId", "coverage dem not found");
+        assert!(xml.contains("exceptionCode=\"NoSuchCoverage\""));
+        assert!(xml.contains("coverage dem not found"));
     }
 
     #[test]

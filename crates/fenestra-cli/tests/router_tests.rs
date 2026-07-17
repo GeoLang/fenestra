@@ -79,6 +79,9 @@ impl FeatureSource for MemSource {
 fn app() -> axum::Router {
     let state = AppState {
         source: Arc::new(MemSource::monaco()),
+        coverages: Arc::new(fenestra_cli::coverage::CoverageCatalog::new(
+            "nonexistent-coverage-dir",
+        )),
         base_url: "http://localhost:8080".into(),
     };
     build_router(state)

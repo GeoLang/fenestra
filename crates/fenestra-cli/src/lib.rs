@@ -1,6 +1,7 @@
 //! Fenestra HTTP server: router assembly and shared state.
 
 pub mod auth;
+pub mod coverage;
 pub mod handlers;
 pub mod metrics;
 pub mod render;
@@ -8,6 +9,7 @@ pub mod source;
 
 use axum::routing::get;
 use axum::{Router, middleware};
+use coverage::CoverageCatalog;
 use source::FeatureSource;
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
@@ -17,6 +19,7 @@ use tower_http::trace::TraceLayer;
 #[derive(Clone)]
 pub struct AppState {
     pub source: Arc<dyn FeatureSource>,
+    pub coverages: Arc<CoverageCatalog>,
     pub base_url: String,
 }
 
@@ -45,6 +48,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/readyz", get(readiness))
         .route("/metrics", get(metrics::metrics_handler))
         .route("/wms", get(handlers::wms))
+        .route("/wcs", get(handlers::wcs))
         .route("/wfs", get(handlers::wfs))
         .route("/wmts", get(handlers::wmts))
         .route(

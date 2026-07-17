@@ -12,6 +12,7 @@ OGC services gateway for the GeoLang GIS stack — the GeoServer-equivalent comp
 - **WMS** — GetCapabilities (XML 1.3.0), GetMap with server-side rendering to PNG (SLD styles applied), EPSG:4326 and EPSG:3857
 - **WFS** — GetCapabilities (XML 2.0.0), GetFeature with bbox filtering, GeoJSON response, feature count limiting
 - **WMTS** — GetCapabilities, GetTile (KVP and RESTful), tiles rendered through the same path as WMS on the WebMercatorQuad grid
+- **WCS** — 2.0.1 core (KVP): GetCapabilities, DescribeCoverage, GetCoverage with bbox subsetting in the native CRS, GeoTIFF output. Coverages are GeoTIFF files in `COVERAGE_DIR` (default `./coverages`), one coverage per file, id = file stem. No reprojection or scaling; files without a CRS geokey are declared EPSG:4326
 - **OGC API Features** — Landing page, conformance, collections, items with bbox filtering and pagination (read access)
 - **Server-Side Map Rendering** — CPU (tiny-skia) backend rendering styled maps to PNG. A GPU (Vello/wgpu) backend exists behind the optional `vello` feature and is experimental
 - **SLD/SE styling** — Parse Styled Layer Descriptors: NamedLayer, Rules, PointSymbolizer, LineSymbolizer, PolygonSymbolizer, TextSymbolizer, Fill, Stroke, Graphic, Mark
@@ -28,6 +29,9 @@ fenestra serve --host 0.0.0.0 --port 8080
 
 # Print default config
 fenestra config
+
+# Fetch a GeoTIFF subset from a coverage in COVERAGE_DIR
+curl "http://localhost:8080/wcs?SERVICE=WCS&REQUEST=GetCoverage&COVERAGEID=dem&SUBSET=x(10.5,11.5)&SUBSET=y(49,50)" -o subset.tif
 ```
 
 ### Endpoints
@@ -39,6 +43,9 @@ fenestra config
 - `GET /wfs?SERVICE=WFS&REQUEST=GetFeature&TYPENAMES=roads&COUNT=10`
 - `GET /wmts?SERVICE=WMTS&REQUEST=GetCapabilities` — WMTS capabilities
 - `GET /wmts?SERVICE=WMTS&REQUEST=GetTile&LAYER=...&TILEMATRIX=...&TILEROW=0&TILECOL=0`
+- `GET /wcs?SERVICE=WCS&REQUEST=GetCapabilities` — WCS capabilities
+- `GET /wcs?SERVICE=WCS&REQUEST=DescribeCoverage&COVERAGEID=dem`
+- `GET /wcs?SERVICE=WCS&REQUEST=GetCoverage&COVERAGEID=dem&SUBSET=x(10.5,11.5)&SUBSET=y(49,50)`
 - `GET /ogc/` — OGC API landing page
 - `GET /ogc/conformance` — Conformance declaration
 - `GET /ogc/collections` — List feature collections
