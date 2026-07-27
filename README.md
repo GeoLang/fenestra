@@ -51,6 +51,15 @@ curl "http://localhost:8080/wcs?SERVICE=WCS&REQUEST=GetCoverage&COVERAGEID=dem&S
 - `GET /ogc/collections` — List feature collections
 - `GET /ogc/collections/{id}/items` — Query features with bbox, limit, offset
 
+### Environment
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PTOLEMY_URL` | `http://ptolemy:3000` | Feature source |
+| `COVERAGE_DIR` | `./coverages` | GeoTIFF coverages for WCS |
+| `FENESTRA_JWT_SECRET` | unset (auth off) | JWT secret; health and metrics stay public |
+| `FENESTRA_PUBLIC_URL` | `http://<host>:<port>` | Externally reachable base URL, path prefix included, for the absolute URLs in WMTS capabilities and the OGC API links. Set it when fenestra sits behind a reverse proxy |
+
 ## Architecture
 
 ```

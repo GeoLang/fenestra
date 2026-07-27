@@ -45,7 +45,12 @@ async fn main() {
             let state = AppState {
                 source,
                 coverages: Arc::new(CoverageCatalog::from_env()),
-                base_url: format!("http://{host}:{port}"),
+                // WMTS ResourceURL templates and the OGC API links are absolute, so
+                // behind a reverse proxy the bind address is the wrong answer: set
+                // FENESTRA_PUBLIC_URL to the externally reachable base (prefix included).
+                base_url: std::env::var("FENESTRA_PUBLIC_URL")
+                    .map(|url| url.trim_end_matches('/').to_string())
+                    .unwrap_or_else(|_| format!("http://{host}:{port}")),
             };
             let app = build_router(state);
 
