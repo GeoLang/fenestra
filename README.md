@@ -37,6 +37,8 @@ curl "http://localhost:8080/wcs?SERVICE=WCS&REQUEST=GetCoverage&COVERAGEID=dem&S
 ### Endpoints
 
 - `GET /health` — Health check
+- `GET /healthz`, `GET /readyz` — Liveness and readiness probes
+- `GET /metrics` — Prometheus metrics
 - `GET /wms?SERVICE=WMS&REQUEST=GetCapabilities` — WMS capabilities
 - `GET /wms?SERVICE=WMS&REQUEST=GetMap&LAYERS=...&BBOX=...&WIDTH=256&HEIGHT=256&FORMAT=image/png`
 - `GET /wfs?SERVICE=WFS&REQUEST=GetCapabilities` — WFS capabilities
@@ -49,6 +51,7 @@ curl "http://localhost:8080/wcs?SERVICE=WCS&REQUEST=GetCoverage&COVERAGEID=dem&S
 - `GET /ogc/` — OGC API landing page
 - `GET /ogc/conformance` — Conformance declaration
 - `GET /ogc/collections` — List feature collections
+- `GET /ogc/collections/{id}` — Single collection description
 - `GET /ogc/collections/{id}/items` — Query features with bbox, limit, offset
 
 ### Environment
@@ -63,9 +66,13 @@ curl "http://localhost:8080/wcs?SERVICE=WCS&REQUEST=GetCoverage&COVERAGEID=dem&S
 ## Architecture
 
 ```
-fenestra-core    — OGC protocol implementations (WMS, WFS, WMTS, OGC API, SLD)
+fenestra-core    — OGC protocol implementations (WMS, WFS, WMTS, WCS, OGC API, SLD)
 fenestra-cli     — HTTP server and CLI
 ```
+
+The workspace also holds four library crates that the server does not depend on yet:
+`fenestra-inspire` (CSW and INSPIRE metadata), `fenestra-geofence` (spatial access control),
+`fenestra-cascade` (remote service proxy), and `fenestra-printing` (PDF output, still a stub).
 
 ## License
 
