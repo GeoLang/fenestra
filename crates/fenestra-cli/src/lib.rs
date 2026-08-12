@@ -7,7 +7,7 @@ pub mod metrics;
 pub mod render;
 pub mod source;
 
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Router, middleware};
 use coverage::CoverageCatalog;
 use source::FeatureSource;
@@ -60,6 +60,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/ogc/collections", get(handlers::collections))
         .route("/ogc/collections/{id}", get(handlers::collection))
         .route("/ogc/collections/{id}/items", get(handlers::items))
+        .route("/sld/symbology", post(handlers::sld_symbology))
         .with_state(state)
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(TraceLayer::new_for_http())

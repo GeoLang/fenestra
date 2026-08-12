@@ -14,6 +14,7 @@ pub mod plugin;
 pub mod processes;
 pub mod renderer;
 pub mod sld;
+pub mod symbology;
 pub mod tiles;
 pub mod wcs;
 mod wfs;
@@ -32,8 +33,12 @@ pub use plugin::{
     PluginResult, RequestContext, ResponseContext, UserIdentity,
 };
 pub use sld::{
-    Fill, Graphic, LineSymbolizer, Mark, NamedLayer, PointSymbolizer, PolygonSymbolizer, Rule,
-    Stroke, Style, StyledLayerDescriptor, Symbolizer, TextSymbolizer, parse_sld,
+    ComparisonOp, Fill, Filter, Graphic, LineSymbolizer, Mark, NamedLayer, PointSymbolizer,
+    PolygonSymbolizer, Rule, Stroke, Style, StyledLayerDescriptor, Symbolizer, TextSymbolizer,
+    parse_sld,
+};
+pub use symbology::{
+    Category, Symbology, SymbologyConversion, SymbologyRule, Unsupported, sld_to_symbology,
 };
 pub use wcs::{
     CoverageDescription, RangeField, SubsetAxis, SubsetSpec, WcsGetCoverageRequest,

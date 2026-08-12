@@ -207,3 +207,160 @@ async fn wms_getcapabilities_lists_layers() {
     let xml = String::from_utf8(body).unwrap();
     assert!(xml.contains("<Name>monaco_pois</Name>"));
 }
+
+async fn post_sld(uri: &str, sld: &str) -> (StatusCode, serde_json::Value) {
+    let response = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/xml")
+                .body(Body::from(sld.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, json)
+}
+
+const CATEGORIZED_SLD: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<StyledLayerDescriptor version="1.0.0" xmlns:ogc="http://www.opengis.net/ogc">
+  <NamedLayer>
+    <Name>landuse</Name>
+    <UserStyle>
+      <Name>by-type</Name>
+      <Rule>
+        <ogc:Filter>
+          <ogc:PropertyIsEqualTo>
+            <ogc:PropertyName>type</ogc:PropertyName>
+            <ogc:Literal>forest</ogc:Literal>
+          </ogc:PropertyIsEqualTo>
+        </ogc:Filter>
+        <PolygonSymbolizer>
+          <Fill><CssParameter name="fill">#1B7837</CssParameter></Fill>
+        </PolygonSymbolizer>
+      </Rule>
+      <Rule>
+        <ogc:Filter>
+          <ogc:PropertyIsEqualTo>
+            <ogc:PropertyName>type</ogc:PropertyName>
+            <ogc:Literal>water</ogc:Literal>
+          </ogc:PropertyIsEqualTo>
+        </ogc:Filter>
+        <PolygonSymbolizer>
+          <Fill><CssParameter name="fill">#2166AC</CssParameter></Fill>
+          <Stroke><CssParameter name="stroke-width">2</CssParameter></Stroke>
+        </PolygonSymbolizer>
+      </Rule>
+    </UserStyle>
+  </NamedLayer>
+</StyledLayerDescriptor>"#;
+
+#[tokio::test]
+async fn sld_symbology_converts_a_categorized_style() {
+    let (status, json) = post_sld("/sld/symbology", CATEGORIZED_SLD).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["layer"], "landuse");
+    assert_eq!(json["style"], "by-type");
+    assert_eq!(json["symbology"]["kind"], "categorized");
+    assert_eq!(json["symbology"]["field"], "type");
+    assert_eq!(
+        json["symbology"]["categories"],
+        serde_json::json!([
+            {"value": "forest", "color": "#1B7837"},
+            {"value": "water", "color": "#2166AC"},
+        ])
+    );
+
+    let lost = json["unsupported"].as_array().unwrap();
+    assert_eq!(
+        lost.len(),
+        1,
+        "only the stroke width is left behind: {lost:?}"
+    );
+    assert_eq!(lost[0]["construct"], "Stroke");
+}
+
+#[tokio::test]
+async fn sld_symbology_reports_what_it_cannot_carry() {
+    let sld = r#"<StyledLayerDescriptor version="1.0.0" xmlns:ogc="http://www.opengis.net/ogc">
+  <NamedLayer>
+    <Name>places</Name>
+    <UserStyle>
+      <Name>labelled</Name>
+      <Rule>
+        <Name>capitals</Name>
+        <MaxScaleDenominator>250000</MaxScaleDenominator>
+        <ogc:Filter>
+          <ogc:Or>
+            <ogc:PropertyIsEqualTo>
+              <ogc:PropertyName>kind</ogc:PropertyName>
+              <ogc:Literal>capital</ogc:Literal>
+            </ogc:PropertyIsEqualTo>
+            <ogc:PropertyIsEqualTo>
+              <ogc:PropertyName>kind</ogc:PropertyName>
+              <ogc:Literal>city</ogc:Literal>
+            </ogc:PropertyIsEqualTo>
+          </ogc:Or>
+        </ogc:Filter>
+        <PointSymbolizer>
+          <Graphic>
+            <Mark>
+              <WellKnownName>star</WellKnownName>
+              <Fill><CssParameter name="fill">#333333</CssParameter></Fill>
+            </Mark>
+            <Size>14</Size>
+          </Graphic>
+        </PointSymbolizer>
+        <TextSymbolizer>
+          <Label><ogc:PropertyName>name</ogc:PropertyName></Label>
+        </TextSymbolizer>
+      </Rule>
+    </UserStyle>
+  </NamedLayer>
+</StyledLayerDescriptor>"#;
+
+    let (status, json) = post_sld("/sld/symbology", sld).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        json["symbology"].is_null(),
+        "an Or filter leaves no rule to apply: {json}"
+    );
+
+    let lost = json["unsupported"].as_array().unwrap();
+    let constructs: Vec<&str> = lost
+        .iter()
+        .map(|entry| entry["construct"].as_str().unwrap())
+        .collect();
+    assert!(constructs.contains(&"Or"), "{constructs:?}");
+    assert!(constructs.contains(&"TextSymbolizer"), "{constructs:?}");
+    assert!(constructs.contains(&"Graphic"), "{constructs:?}");
+    assert!(constructs.contains(&"ScaleDenominator"), "{constructs:?}");
+
+    let or = lost.iter().find(|e| e["construct"] == "Or").unwrap();
+    assert_eq!(or["rule_name"], "capitals");
+    assert_eq!(or["rule_index"], 0);
+}
+
+#[tokio::test]
+async fn sld_symbology_rejects_a_document_with_no_style() {
+    let (status, _) = post_sld("/sld/symbology", "not an sld").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn sld_symbology_selects_a_layer_and_style_by_name() {
+    let (status, json) = post_sld(
+        "/sld/symbology?layer=landuse&style=by-type",
+        CATEGORIZED_SLD,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["symbology"]["kind"], "categorized");
+
+    let (status, _) = post_sld("/sld/symbology?layer=missing", CATEGORIZED_SLD).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}

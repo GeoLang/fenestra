@@ -15,7 +15,8 @@ OGC services gateway for the GeoLang GIS stack — the GeoServer-equivalent comp
 - **WCS** — 2.0.1 core (KVP): GetCapabilities, DescribeCoverage, GetCoverage with bbox subsetting in the native CRS, GeoTIFF output. Coverages are GeoTIFF files in `COVERAGE_DIR` (default `./coverages`), one coverage per file, id = file stem. Single-band float64 only, no reprojection or scaling; files without a CRS geokey are declared EPSG:4326
 - **OGC API Features** — Landing page, conformance, collections, items with bbox filtering and pagination (read access)
 - **Server-Side Map Rendering** — CPU (tiny-skia) backend rendering styled maps to PNG. A GPU (Vello/wgpu) backend exists behind the optional `vello` feature and is experimental
-- **SLD/SE styling** — Parse Styled Layer Descriptors: NamedLayer, Rules, PointSymbolizer, LineSymbolizer, PolygonSymbolizer, TextSymbolizer, Fill, Stroke, Graphic, Mark
+- **SLD/SE styling** — Parse Styled Layer Descriptors: NamedLayer, Rules, filters (property comparisons, ranges, else), PointSymbolizer, LineSymbolizer, PolygonSymbolizer, TextSymbolizer, Fill, Stroke, Graphic, Mark
+- **SLD to symbology** — `POST /sld/symbology` converts a style into the viewer's graduated, categorized or rule-based symbology, and reports every SLD construct that shape cannot carry instead of approximating it
 - **HTTP server** — Axum-based, async, production-ready with configurable host/port
 - **Configuration** — JSON-based layer config with per-layer CRS, BBOX, and data source paths
 - **MVT encoding** — Mapbox Vector Tile binary encoding with geometry command sequences, tile-coordinate scaling, and tag interning
@@ -53,6 +54,7 @@ curl "http://localhost:8080/wcs?SERVICE=WCS&REQUEST=GetCoverage&COVERAGEID=dem&S
 - `GET /ogc/collections` — List feature collections
 - `GET /ogc/collections/{id}` — Single collection description
 - `GET /ogc/collections/{id}/items` — Query features with bbox, limit, offset
+- `POST /sld/symbology` — Convert an SLD document (request body) into viewer symbology JSON; `?layer=` and `?style=` pick one of several in the document
 
 ### Environment
 

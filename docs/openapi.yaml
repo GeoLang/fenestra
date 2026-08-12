@@ -93,3 +93,62 @@ paths:
       responses:
         '200':
           description: GeoJSON features or capabilities XML
+
+  /sld/symbology:
+    post:
+      summary: Convert an SLD document to viewer symbology
+      description: >
+        Maps one style of a posted SLD onto a graduated, categorized or
+        rule-based symbology. Everything the symbology cannot carry is listed
+        in `unsupported` rather than approximated.
+      parameters:
+        - name: layer
+          in: query
+          description: NamedLayer to convert; the first one by default.
+          schema:
+            type: string
+        - name: style
+          in: query
+          description: UserStyle to convert; the first one by default.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/xml:
+            schema:
+              type: string
+      responses:
+        '200':
+          description: The converted symbology and what was left behind
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [layer, symbology, unsupported]
+                properties:
+                  layer:
+                    type: string
+                  style:
+                    type: [string, 'null']
+                  symbology:
+                    type: [object, 'null']
+                    description: >
+                      One of graduated, categorized or rules, keyed by `kind`.
+                      Null when no rule classifies features by a property.
+                  unsupported:
+                    type: array
+                    items:
+                      type: object
+                      required: [construct, detail]
+                      properties:
+                        construct:
+                          type: string
+                        rule_index:
+                          type: [integer, 'null']
+                        rule_name:
+                          type: [string, 'null']
+                        detail:
+                          type: string
+        '400':
+          description: The document holds no style, or the named layer is missing

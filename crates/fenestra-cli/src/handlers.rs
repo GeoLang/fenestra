@@ -11,7 +11,7 @@ use fenestra_core::renderer::render_map;
 use fenestra_core::{
     BboxFilter, CollectionInfo, ConformanceDeclaration, Feature, FeatureCollection, LandingPage,
     Link, ServiceConfig, WmsGetMapRequest, WmtsGetTileRequest, paginate_features, parse_sld,
-    wmts_capabilities_xml,
+    sld_to_symbology, wmts_capabilities_xml,
 };
 use serde::Serialize;
 use std::collections::HashMap;
@@ -610,4 +610,22 @@ pub async fn items(
         None => features,
     };
     Json(paginate_features(&features, offset, limit)).into_response()
+}
+
+// ─── SLD conversion ──────────────────────────────────────────────────────────
+
+/// Convert a posted SLD document into viewer symbology. `layer` and `style`
+/// pick one of several in the document; without them the first of each is used.
+pub async fn sld_symbology(Query(raw): Query<HashMap<String, String>>, body: String) -> Response {
+    metrics_counter("fenestra_sld_symbology_requests");
+    let kvp = Kvp::new(raw);
+
+    let sld = match parse_sld(&body) {
+        Ok(sld) => sld,
+        Err(e) => return bad_request(e),
+    };
+    match sld_to_symbology(&sld, kvp.get("layer"), kvp.get("style")) {
+        Ok(conversion) => Json(conversion).into_response(),
+        Err(e) => bad_request(e),
+    }
 }

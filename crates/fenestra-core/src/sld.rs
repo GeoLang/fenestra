@@ -29,9 +29,40 @@ pub struct Style {
 #[derive(Debug, Clone)]
 pub struct Rule {
     pub name: Option<String>,
+    pub filter: Option<Filter>,
     pub min_scale: Option<f64>,
     pub max_scale: Option<f64>,
     pub symbolizers: Vec<Symbolizer>,
+}
+
+/// The test that selects the features a rule applies to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Filter {
+    Comparison {
+        property: String,
+        op: ComparisonOp,
+        value: String,
+    },
+    Between {
+        property: String,
+        lower: String,
+        upper: String,
+    },
+    /// `<ElseFilter/>`: the features no other rule in the style matched.
+    Else,
+    /// A filter element this parser does not model, by its local element name.
+    Unsupported(String),
+}
+
+/// A binary comparison between a property and a literal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComparisonOp {
+    EqualTo,
+    NotEqualTo,
+    LessThan,
+    LessThanOrEqualTo,
+    GreaterThan,
+    GreaterThanOrEqualTo,
 }
 
 /// A symbolizer defining how to render a feature.
@@ -198,10 +229,89 @@ fn parse_rule(content: &str) -> Rule {
 
     Rule {
         name,
+        filter: parse_filter(content),
         min_scale,
         max_scale,
         symbolizers,
     }
+}
+
+const COMPARISON_TAGS: [(&str, ComparisonOp); 6] = [
+    ("PropertyIsEqualTo", ComparisonOp::EqualTo),
+    ("PropertyIsNotEqualTo", ComparisonOp::NotEqualTo),
+    ("PropertyIsLessThan", ComparisonOp::LessThan),
+    (
+        "PropertyIsLessThanOrEqualTo",
+        ComparisonOp::LessThanOrEqualTo,
+    ),
+    ("PropertyIsGreaterThan", ComparisonOp::GreaterThan),
+    (
+        "PropertyIsGreaterThanOrEqualTo",
+        ComparisonOp::GreaterThanOrEqualTo,
+    ),
+];
+
+fn parse_filter(content: &str) -> Option<Filter> {
+    if find_tag(content, 0, "ElseFilter").is_some() {
+        return Some(Filter::Else);
+    }
+
+    let start = find_tag(content, 0, "Filter")?;
+    let end = find_closing_tag(content, start, "Filter").unwrap_or(content.len());
+    let (name, body) = first_child_element(&content[start..end])?;
+
+    if let Some((_, op)) = COMPARISON_TAGS.iter().find(|(tag, _)| *tag == name) {
+        let property = extract_tag_content(body, "PropertyName");
+        let value = extract_tag_content(body, "Literal");
+        if let (Some(property), Some(value)) = (property, value) {
+            return Some(Filter::Comparison {
+                property,
+                op: *op,
+                value,
+            });
+        }
+    }
+
+    if name == "PropertyIsBetween" {
+        let property = extract_tag_content(body, "PropertyName");
+        let lower = extract_boundary(body, "LowerBoundary");
+        let upper = extract_boundary(body, "UpperBoundary");
+        if let (Some(property), Some(lower), Some(upper)) = (property, lower, upper) {
+            return Some(Filter::Between {
+                property,
+                lower,
+                upper,
+            });
+        }
+    }
+
+    Some(Filter::Unsupported(name))
+}
+
+fn extract_boundary(content: &str, tag: &str) -> Option<String> {
+    let boundary = extract_tag_content(content, tag)?;
+    extract_tag_content(&boundary, "Literal").or(Some(boundary))
+}
+
+/// The first element inside an already-opened container, as its local name and
+/// the document from that element onwards.
+fn first_child_element(content: &str) -> Option<(String, &str)> {
+    let after_open = content.find('>')? + 1;
+    let rest = &content[after_open..];
+
+    let mut offset = 0;
+    while let Some(idx) = rest[offset..].find('<') {
+        let start = offset + idx;
+        let after = &rest[start + 1..];
+        if after.starts_with('/') || after.starts_with('!') || after.starts_with('?') {
+            offset = start + 1;
+            continue;
+        }
+        let name_end = after.find(|c: char| c == '>' || c == '/' || c.is_whitespace())?;
+        let name = after[..name_end].rsplit(':').next()?.to_string();
+        return Some((name, &rest[start..]));
+    }
+    None
 }
 
 fn parse_point_symbolizer(content: &str) -> PointSymbolizer {
@@ -332,14 +442,17 @@ fn extract_css_param(content: &str, name: &str) -> Option<String> {
 
 // --- Simple XML helpers (no external dependency) ---
 
+/// Namespace prefixes seen on SLD/SE elements, plus the ones filters carry.
+const NAMESPACE_PREFIXES: [&str; 5] = ["", "se:", "sld:", "ogc:", "fes:"];
+
+fn tag_patterns(prefix_of: impl Fn(&str) -> String) -> Vec<String> {
+    NAMESPACE_PREFIXES.iter().map(|ns| prefix_of(ns)).collect()
+}
+
 fn find_tag(content: &str, start: usize, tag: &str) -> Option<usize> {
     let search = &content[start..];
     // Match <Tag or <ns:Tag, ensuring it's an exact tag (not prefix of longer name)
-    let patterns = [
-        format!("<{}", tag),
-        format!("<se:{}", tag),
-        format!("<sld:{}", tag),
-    ];
+    let patterns = tag_patterns(|ns| format!("<{}{}", ns, tag));
 
     let mut best: Option<usize> = None;
     for pattern in &patterns {
@@ -372,11 +485,7 @@ fn find_tag(content: &str, start: usize, tag: &str) -> Option<usize> {
 }
 
 fn find_closing_tag(content: &str, start: usize, tag: &str) -> Option<usize> {
-    let patterns = [
-        format!("</{}>", tag),
-        format!("</se:{}>", tag),
-        format!("</sld:{}>", tag),
-    ];
+    let patterns = tag_patterns(|ns| format!("</{}{}>", ns, tag));
 
     let search = &content[start..];
     let mut best: Option<usize> = None;
@@ -395,11 +504,7 @@ fn extract_tag_content(content: &str, tag: &str) -> Option<String> {
     let gt = search.find('>')?;
     let value_start = start + gt + 1;
 
-    let patterns = [
-        format!("</{}>", tag),
-        format!("</se:{}>", tag),
-        format!("</sld:{}>", tag),
-    ];
+    let patterns = tag_patterns(|ns| format!("</{}{}>", ns, tag));
 
     for pattern in &patterns {
         if let Some(end_idx) = content[value_start..].find(pattern.as_str()) {
@@ -542,6 +647,66 @@ mod tests {
         } else {
             panic!("expected line symbolizer");
         }
+    }
+
+    #[test]
+    fn test_parse_filters() {
+        let sld_xml = r#"<StyledLayerDescriptor version="1.0.0" xmlns:ogc="http://www.opengis.net/ogc">
+  <NamedLayer>
+    <Name>places</Name>
+    <UserStyle>
+      <Rule>
+        <ogc:Filter>
+          <ogc:PropertyIsGreaterThanOrEqualTo>
+            <ogc:PropertyName>pop</ogc:PropertyName>
+            <ogc:Literal>1000</ogc:Literal>
+          </ogc:PropertyIsGreaterThanOrEqualTo>
+        </ogc:Filter>
+      </Rule>
+      <Rule>
+        <ogc:Filter>
+          <ogc:PropertyIsBetween>
+            <ogc:PropertyName>pop</ogc:PropertyName>
+            <ogc:LowerBoundary><ogc:Literal>0</ogc:Literal></ogc:LowerBoundary>
+            <ogc:UpperBoundary><ogc:Literal>999</ogc:Literal></ogc:UpperBoundary>
+          </ogc:PropertyIsBetween>
+        </ogc:Filter>
+      </Rule>
+      <Rule>
+        <ogc:Filter>
+          <ogc:PropertyIsLike wildCard="*"><ogc:PropertyName>name</ogc:PropertyName></ogc:PropertyIsLike>
+        </ogc:Filter>
+      </Rule>
+      <Rule><ElseFilter/></Rule>
+      <Rule><PolygonSymbolizer/></Rule>
+    </UserStyle>
+  </NamedLayer>
+</StyledLayerDescriptor>"#;
+
+        let sld = parse_sld(sld_xml).unwrap();
+        let rules = &sld.named_layers[0].styles[0].rules;
+        assert_eq!(
+            rules[0].filter,
+            Some(Filter::Comparison {
+                property: "pop".into(),
+                op: ComparisonOp::GreaterThanOrEqualTo,
+                value: "1000".into(),
+            })
+        );
+        assert_eq!(
+            rules[1].filter,
+            Some(Filter::Between {
+                property: "pop".into(),
+                lower: "0".into(),
+                upper: "999".into(),
+            })
+        );
+        assert_eq!(
+            rules[2].filter,
+            Some(Filter::Unsupported("PropertyIsLike".into()))
+        );
+        assert_eq!(rules[3].filter, Some(Filter::Else));
+        assert_eq!(rules[4].filter, None);
     }
 
     #[test]
