@@ -19,7 +19,6 @@ OGC services gateway for the GeoLang GIS stack — the GeoServer-equivalent comp
 - **SLD to symbology** — `POST /sld/symbology` converts a style into the viewer's graduated, categorized or rule-based symbology, and reports every SLD construct that shape cannot carry instead of approximating it
 - **HTTP server** — Axum-based, async, production-ready with configurable host/port
 - **Configuration** — JSON-based layer config with per-layer CRS, BBOX, and data source paths
-- **MVT encoding** — Mapbox Vector Tile binary encoding with geometry command sequences, tile-coordinate scaling, and tag interning
 - **Platform Integration** — Proxies to Ptolemy for feature data, part of `docker-compose.platform.yml`
 
 ## Usage
@@ -75,6 +74,8 @@ fenestra-cli     — HTTP server and CLI
 The workspace also holds four library crates that the server does not depend on yet:
 `fenestra-inspire` (CSW and INSPIRE metadata), `fenestra-geofence` (spatial access control),
 `fenestra-cascade` (remote service proxy), and `fenestra-printing` (PDF output, still a stub).
+`fenestra-core` also carries a Mapbox Vector Tile encoder (`mvt` module) that no endpoint
+serves yet.
 
 ## License
 

@@ -55,9 +55,7 @@ footer{border-top:1px solid var(--border);padding:32px 0;text-align:center;color
 </div>
 <div class="stats">
 <div class="stat"><div class="num">5</div><div class="label">OGC services</div></div>
-<div class="stat"><div class="num">14</div><div class="label">Endpoints</div></div>
-<div class="stat"><div class="num">∞</div><div class="label">Concurrent req</div></div>
-<div class="stat"><div class="num">&lt;1ms</div><div class="label">Capability gen</div></div>
+<div class="stat"><div class="num">15</div><div class="label">Endpoints</div></div>
 </div>
 </div>
 </header>
@@ -84,6 +82,49 @@ footer{border-top:1px solid var(--border);padding:32px 0;text-align:center;color
 <li>GeoJSON response format</li>
 <li>BBOX spatial filtering</li>
 <li>Feature count limiting</li>
+</ul>
+</div>
+<div class="card">
+<h3>🧱 WMTS (Web Map Tile Service)</h3>
+<ul>
+<li>GetCapabilities</li>
+<li>GetTile, KVP and RESTful</li>
+<li>WebMercatorQuad grid</li>
+<li>Rendered through the WMS path</li>
+</ul>
+</div>
+<div class="card">
+<h3>⛰️ WCS (Web Coverage Service)</h3>
+<ul>
+<li>2.0.1 core, KVP</li>
+<li>GetCapabilities, DescribeCoverage</li>
+<li>GetCoverage with bbox subsetting</li>
+<li>GeoTIFF output via terrano</li>
+</ul>
+</div>
+<div class="card">
+<h3>🖼️ Server-Side Rendering</h3>
+<ul>
+<li>Styled maps to PNG</li>
+<li>CPU (tiny-skia) default</li>
+<li>GPU (Vello/wgpu) behind a feature, experimental</li>
+</ul>
+</div>
+<div class="card">
+<h3>🎨 SLD/SE Styling</h3>
+<ul>
+<li>NamedLayer, Rules, filters</li>
+<li>Point, Line, Polygon, Text symbolizers</li>
+<li>POST /sld/symbology conversion</li>
+<li>Unsupported constructs reported, not approximated</li>
+</ul>
+</div>
+<div class="card">
+<h3>📚 OGC API Features</h3>
+<ul>
+<li>Landing page and conformance</li>
+<li>Collections and items</li>
+<li>BBOX filtering and pagination</li>
 </ul>
 </div>
 <div class="card">
