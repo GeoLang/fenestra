@@ -67,19 +67,19 @@ footer{border-top:1px solid var(--border);padding:32px 0;text-align:center;color
 <div class="card">
 <h3>🗺️ WMS (Web Map Service)</h3>
 <ul>
-<li>GetCapabilities (XML 1.3.0)</li>
+<li>GetCapabilities (XML 1.3.0), minimal, not yet client-consumable</li>
 <li>GetMap request parsing</li>
-<li>BBOX + CRS validation</li>
+<li>BBOX validation</li>
 <li>Multi-layer support</li>
-<li>Format negotiation</li>
+<li>PNG output only, STYLES ignored</li>
 </ul>
 </div>
 <div class="card">
 <h3>📊 WFS (Web Feature Service)</h3>
 <ul>
-<li>GetCapabilities (XML 2.0.0)</li>
+<li>GetCapabilities (XML 2.0.0), minimal, not yet client-consumable</li>
 <li>GetFeature request parsing</li>
-<li>GeoJSON response format</li>
+<li>GeoJSON body, served as application/json</li>
 <li>BBOX spatial filtering</li>
 <li>Feature count limiting</li>
 </ul>
@@ -87,10 +87,10 @@ footer{border-top:1px solid var(--border);padding:32px 0;text-align:center;color
 <div class="card">
 <h3>🧱 WMTS (Web Map Tile Service)</h3>
 <ul>
-<li>GetCapabilities</li>
+<li>GetCapabilities, minimal: TileMatrixSet carries no TileMatrix levels</li>
 <li>GetTile, KVP and RESTful</li>
 <li>WebMercatorQuad grid</li>
-<li>Rendered through the WMS path</li>
+<li>Rendered through the WMS path, unstyled</li>
 </ul>
 </div>
 <div class="card">
@@ -113,8 +113,10 @@ footer{border-top:1px solid var(--border);padding:32px 0;text-align:center;color
 <div class="card">
 <h3>🎨 SLD/SE Styling</h3>
 <ul>
-<li>NamedLayer, Rules, filters</li>
-<li>Point, Line, Polygon, Text symbolizers</li>
+<li>NamedLayer and Rules parsed</li>
+<li>Point, Line, Polygon symbolizers drawn; Text parsed only</li>
+<li>Filters and scale bounds parsed but not applied when rendering</li>
+<li>One symbolizer per type per rule is kept</li>
 <li>POST /sld/symbology conversion</li>
 <li>Unsupported constructs reported, not approximated</li>
 </ul>
@@ -125,6 +127,7 @@ footer{border-top:1px solid var(--border);padding:32px 0;text-align:center;color
 <li>Landing page and conformance</li>
 <li>Collections and items</li>
 <li>BBOX filtering and pagination</li>
+<li>No single-feature route, no OpenAPI document, no item links</li>
 </ul>
 </div>
 <div class="card">
@@ -134,17 +137,14 @@ footer{border-top:1px solid var(--border);padding:32px 0;text-align:center;color
 <li>Health check endpoint</li>
 <li>Query parameter extraction</li>
 <li>Configurable host/port</li>
-<li>Production-ready (tokio runtime)</li>
+<li>Tokio runtime; no feature cache, rate limit or upstream timeout</li>
 </ul>
 </div>
 <div class="card">
 <h3>⚙️ Configuration</h3>
 <ul>
-<li>JSON-based layer config</li>
-<li>Service metadata (title, abstract)</li>
-<li>Per-layer CRS and BBOX</li>
-<li>Data source paths</li>
 <li>Default config generation</li>
+<li>Layers derived from Ptolemy collections</li>
 </ul>
 </div>
 </div>
