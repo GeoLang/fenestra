@@ -8,7 +8,7 @@
 //! Falls back to CPU when no GPU is present or for headless CI/server environments.
 
 use crate::ogcapi::{Feature, Geometry};
-use crate::sld::{Fill, Stroke, Style, Symbolizer};
+use crate::sld::{ComparisonOp, Fill, Filter, Rule, Stroke, Style, Symbolizer};
 use crate::wms::WmsGetMapRequest;
 
 /// A map layer with features and styling.
@@ -64,6 +64,104 @@ pub fn render_map_with_backend(
     }
 }
 
+fn scale_denominator(bbox: &[f64; 4], width: u32) -> f64 {
+    let map_width = (bbox[2] - bbox[0]).abs();
+    map_width / (width as f64 * 0.000_28)
+}
+
+fn rule_applies_at_scale(rule: &Rule, denom: f64) -> bool {
+    rule.min_scale.is_none_or(|min| denom >= min) && rule.max_scale.is_none_or(|max| denom < max)
+}
+
+fn property_text(feature: &Feature, property: &str) -> Option<String> {
+    match feature.properties.get(property)? {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        other => Some(other.to_string()),
+    }
+}
+
+fn compare_literals(left: &str, op: ComparisonOp, right: &str) -> bool {
+    let ord = match (left.parse::<f64>(), right.parse::<f64>()) {
+        (Ok(l), Ok(r)) => l.partial_cmp(&r),
+        _ => Some(left.cmp(right)),
+    };
+    match ord {
+        Some(std::cmp::Ordering::Equal) => matches!(
+            op,
+            ComparisonOp::EqualTo
+                | ComparisonOp::LessThanOrEqualTo
+                | ComparisonOp::GreaterThanOrEqualTo
+        ),
+        Some(std::cmp::Ordering::Less) => matches!(
+            op,
+            ComparisonOp::NotEqualTo | ComparisonOp::LessThan | ComparisonOp::LessThanOrEqualTo
+        ),
+        Some(std::cmp::Ordering::Greater) => matches!(
+            op,
+            ComparisonOp::NotEqualTo
+                | ComparisonOp::GreaterThan
+                | ComparisonOp::GreaterThanOrEqualTo
+        ),
+        None => false,
+    }
+}
+
+fn feature_matches_filter(feature: &Feature, filter: &Filter, already_matched: bool) -> bool {
+    match filter {
+        Filter::Else => !already_matched,
+        Filter::Unsupported(_) => false,
+        Filter::Comparison {
+            property,
+            op,
+            value,
+        } => property_text(feature, property).is_some_and(|got| compare_literals(&got, *op, value)),
+        Filter::Between {
+            property,
+            lower,
+            upper,
+        } => property_text(feature, property).is_some_and(|got| {
+            match (
+                got.parse::<f64>(),
+                lower.parse::<f64>(),
+                upper.parse::<f64>(),
+            ) {
+                (Ok(v), Ok(lo), Ok(hi)) => v >= lo && v <= hi,
+                _ => got.as_str() >= lower.as_str() && got.as_str() <= upper.as_str(),
+            }
+        }),
+    }
+}
+
+fn matching_rule<'a>(feature: &Feature, rules: &'a [Rule], denom: f64) -> Option<&'a Rule> {
+    matching_rule_index(feature, rules, denom).map(|i| &rules[i])
+}
+
+fn matching_rule_index(feature: &Feature, rules: &[Rule], denom: f64) -> Option<usize> {
+    let mut else_idx = None;
+    for (i, rule) in rules.iter().enumerate() {
+        if !rule_applies_at_scale(rule, denom) {
+            continue;
+        }
+        match rule.filter.as_ref() {
+            Some(Filter::Else) => {
+                if else_idx.is_none() && feature_matches_filter(feature, &Filter::Else, false) {
+                    else_idx = Some(i);
+                }
+            }
+            Some(filter) => {
+                if feature_matches_filter(feature, filter, false) {
+                    return Some(i);
+                }
+            }
+            None => return Some(i),
+        }
+    }
+    else_idx
+}
+
 // ─── CPU Backend (tiny-skia) ─────────────────────────────────────────────────
 
 mod cpu {
@@ -107,25 +205,21 @@ mod cpu {
         pixmap.fill(tiny_skia::Color::WHITE);
 
         let transform = MapTransform::new(width, height, &bbox);
+        let denom = scale_denominator(&bbox, width);
 
         for layer in layers {
-            render_layer(&mut pixmap, layer, &transform);
+            render_layer(&mut pixmap, layer, &transform, denom);
         }
 
         encode_png(pixmap.width(), pixmap.height(), pixmap.data())
     }
 
-    fn render_layer(pixmap: &mut tiny_skia::Pixmap, layer: &RenderLayer, transform: &MapTransform) {
-        for rule in &layer.style.rules {
-            for symbolizer in &rule.symbolizers {
-                for feature in &layer.features {
-                    if let Some(geom) = &feature.geometry {
-                        render_feature(pixmap, geom, symbolizer, transform);
-                    }
-                }
-            }
-        }
-
+    fn render_layer(
+        pixmap: &mut tiny_skia::Pixmap,
+        layer: &RenderLayer,
+        transform: &MapTransform,
+        denom: f64,
+    ) {
         if layer.style.rules.is_empty() {
             let default_fill = tiny_skia::Color::from_rgba8(100, 149, 237, 128);
             let default_stroke = tiny_skia::Color::from_rgba8(0, 0, 0, 255);
@@ -133,6 +227,19 @@ mod cpu {
                 if let Some(geom) = &feature.geometry {
                     render_feature_default(pixmap, geom, transform, default_fill, default_stroke);
                 }
+            }
+            return;
+        }
+
+        for feature in &layer.features {
+            let Some(geom) = &feature.geometry else {
+                continue;
+            };
+            let Some(rule) = matching_rule(feature, &layer.style.rules, denom) else {
+                continue;
+            };
+            for symbolizer in &rule.symbolizers {
+                render_feature(pixmap, geom, symbolizer, transform);
             }
         }
     }
@@ -398,11 +505,13 @@ mod gpu {
             max_x: bbox_arr[2],
             max_y: bbox_arr[3],
         };
+        let scale_denom = scale_denominator(&bbox_arr, request.width);
 
         let builder = SceneBuilder::new(request.width, request.height, bbox);
-        let jung_style = convert_style(layers);
-        let jung_features = convert_features(layers);
-        let scene = builder.build(&jung_style, &jung_features);
+        let mut scene = vello::Scene::new();
+        for layer in layers {
+            paint_gpu_layer(&builder, &mut scene, layer, scale_denom);
+        }
 
         let params = vello::RenderParams {
             base_color: vello::peniko::Color::WHITE,
@@ -512,13 +621,53 @@ mod gpu {
         ))
     }
 
+    fn paint_gpu_layer(
+        builder: &jung_vello::SceneBuilder,
+        scene: &mut vello::Scene,
+        layer: &RenderLayer,
+        scale_denom: f64,
+    ) {
+        if layer.style.rules.is_empty() {
+            use jung_style::Color;
+            let jung_layer = make_layer(
+                Some(Color::rgba(100, 149, 237, 128)),
+                Some(Color::rgba(0, 0, 0, 255)),
+                Some(1.0),
+                Some(4.0),
+            );
+            let jung_features = convert_features(&layer.features);
+            let part = builder.build_layer(&jung_layer, &jung_features);
+            scene.append(&part, None);
+            return;
+        }
+
+        let mut buckets: Vec<Vec<&Feature>> = vec![Vec::new(); layer.style.rules.len()];
+        for feature in &layer.features {
+            if let Some(i) = matching_rule_index(feature, &layer.style.rules, scale_denom) {
+                buckets[i].push(feature);
+            }
+        }
+        for (rule, feats) in layer.style.rules.iter().zip(buckets) {
+            if feats.is_empty() {
+                continue;
+            }
+            let jung_features = convert_features(feats);
+            for symbolizer in &rule.symbolizers {
+                let jung_layer = jung_layer_for_symbolizer(symbolizer);
+                let part = builder.build_layer(&jung_layer, &jung_features);
+                scene.append(&part, None);
+            }
+        }
+    }
+
     /// Convert fenestra OGC features to jung-core geometry features.
-    fn convert_features(layers: &[RenderLayer]) -> Vec<jung_core::geometry::Feature> {
+    fn convert_features<'a>(
+        features: impl IntoIterator<Item = &'a Feature>,
+    ) -> Vec<jung_core::geometry::Feature> {
         use jung_core::geometry::{Geometry as JungGeom, Point, PolygonGeom};
 
-        layers
-            .iter()
-            .flat_map(|layer| &layer.features)
+        features
+            .into_iter()
             .filter_map(|f| {
                 let geom = f.geometry.as_ref()?;
                 let jung_geom = match geom {
@@ -614,78 +763,49 @@ mod gpu {
         map
     }
 
-    /// Convert fenestra SLD styles to jung-style layers.
-    fn convert_style(layers: &[RenderLayer]) -> jung_style::Style {
-        use jung_style::{Color, Layer as JungLayer};
+    fn jung_layer_for_symbolizer(sym: &Symbolizer) -> jung_style::Layer {
+        use jung_style::Color;
 
-        let jung_layers: Vec<JungLayer> = layers
-            .iter()
-            .flat_map(|layer| {
-                if layer.style.rules.is_empty() {
-                    vec![make_layer(
-                        Some(Color::rgba(100, 149, 237, 128)),
-                        Some(Color::rgba(0, 0, 0, 255)),
-                        Some(1.0),
-                        Some(4.0),
-                    )]
-                } else {
-                    layer
-                        .style
-                        .rules
-                        .iter()
-                        .flat_map(|rule| {
-                            rule.symbolizers.iter().map(|sym| match sym {
-                                Symbolizer::Point(ps) => {
-                                    let size = ps.graphic.size.unwrap_or(8.0);
-                                    let color = ps
-                                        .graphic
-                                        .mark
-                                        .as_ref()
-                                        .and_then(|m| m.fill.as_ref())
-                                        .and_then(|f| f.color.as_deref())
-                                        .map(parse_hex_to_jung_color)
-                                        .unwrap_or(Color::rgba(255, 0, 0, 255));
-                                    make_layer(Some(color), None, None, Some(size as f32 / 2.0))
-                                }
-                                Symbolizer::Line(ls) => {
-                                    let color = ls
-                                        .stroke
-                                        .color
-                                        .as_deref()
-                                        .map(parse_hex_to_jung_color)
-                                        .unwrap_or(Color::rgba(0, 0, 0, 255));
-                                    let width = ls.stroke.width.unwrap_or(1.0) as f32;
-                                    make_layer(None, Some(color), Some(width), None)
-                                }
-                                Symbolizer::Polygon(ps) => {
-                                    let fill = ps
-                                        .fill
-                                        .as_ref()
-                                        .and_then(|f| f.color.as_deref())
-                                        .map(parse_hex_to_jung_color)
-                                        .unwrap_or(Color::rgba(200, 200, 200, 128));
-                                    let stroke = ps
-                                        .stroke
-                                        .as_ref()
-                                        .and_then(|s| s.color.as_deref())
-                                        .map(parse_hex_to_jung_color)
-                                        .unwrap_or(Color::rgba(0, 0, 0, 255));
-                                    let width =
-                                        ps.stroke.as_ref().and_then(|s| s.width).unwrap_or(1.0)
-                                            as f32;
-                                    make_layer(Some(fill), Some(stroke), Some(width), None)
-                                }
-                                Symbolizer::Text(_) => make_layer(None, None, None, None),
-                            })
-                        })
-                        .collect()
-                }
-            })
-            .collect();
-
-        jung_style::Style {
-            name: String::new(),
-            layers: jung_layers,
+        match sym {
+            Symbolizer::Point(ps) => {
+                let size = ps.graphic.size.unwrap_or(8.0);
+                let color = ps
+                    .graphic
+                    .mark
+                    .as_ref()
+                    .and_then(|m| m.fill.as_ref())
+                    .and_then(|f| f.color.as_deref())
+                    .map(parse_hex_to_jung_color)
+                    .unwrap_or(Color::rgba(255, 0, 0, 255));
+                make_layer(Some(color), None, None, Some(size as f32 / 2.0))
+            }
+            Symbolizer::Line(ls) => {
+                let color = ls
+                    .stroke
+                    .color
+                    .as_deref()
+                    .map(parse_hex_to_jung_color)
+                    .unwrap_or(Color::rgba(0, 0, 0, 255));
+                let width = ls.stroke.width.unwrap_or(1.0) as f32;
+                make_layer(None, Some(color), Some(width), None)
+            }
+            Symbolizer::Polygon(ps) => {
+                let fill = ps
+                    .fill
+                    .as_ref()
+                    .and_then(|f| f.color.as_deref())
+                    .map(parse_hex_to_jung_color)
+                    .unwrap_or(Color::rgba(200, 200, 200, 128));
+                let stroke = ps
+                    .stroke
+                    .as_ref()
+                    .and_then(|s| s.color.as_deref())
+                    .map(parse_hex_to_jung_color)
+                    .unwrap_or(Color::rgba(0, 0, 0, 255));
+                let width = ps.stroke.as_ref().and_then(|s| s.width).unwrap_or(1.0) as f32;
+                make_layer(Some(fill), Some(stroke), Some(width), None)
+            }
+            Symbolizer::Text(_) => make_layer(None, None, None, None),
         }
     }
 
@@ -813,5 +933,306 @@ mod tests {
         };
         let png = render_map_with_backend(&request, &[], Backend::Gpu);
         assert!(!png.is_empty());
+    }
+
+    fn typed_feature(id: &str, r#type: &str, geom: Geometry) -> Feature {
+        Feature::new(
+            Some(id.to_string()),
+            geom,
+            serde_json::json!({"type": r#type}),
+        )
+    }
+
+    fn square(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Geometry {
+        Geometry::Polygon {
+            coordinates: vec![vec![
+                [minx, miny],
+                [maxx, miny],
+                [maxx, maxy],
+                [minx, maxy],
+                [minx, miny],
+            ]],
+        }
+    }
+
+    fn eq_type(value: &str) -> Filter {
+        Filter::Comparison {
+            property: "type".into(),
+            op: ComparisonOp::EqualTo,
+            value: value.into(),
+        }
+    }
+
+    fn fill_rule(filter: Option<Filter>, color: &str, min_scale: Option<f64>) -> Rule {
+        Rule {
+            name: None,
+            filter,
+            min_scale,
+            max_scale: None,
+            symbolizers: vec![Symbolizer::Polygon(crate::sld::PolygonSymbolizer {
+                fill: Some(Fill {
+                    color: Some(color.into()),
+                    opacity: None,
+                }),
+                stroke: Some(Stroke {
+                    color: Some(color.into()),
+                    width: Some(0.0),
+                    opacity: None,
+                    dash_array: None,
+                }),
+            })],
+        }
+    }
+
+    fn map_request(bbox: &str, width: u32, height: u32) -> WmsGetMapRequest {
+        WmsGetMapRequest {
+            layers: "test".to_string(),
+            styles: "".to_string(),
+            crs: "EPSG:4326".to_string(),
+            bbox: bbox.to_string(),
+            width,
+            height,
+            format: "image/png".to_string(),
+        }
+    }
+
+    fn rgba_at(png: &[u8], x: u32, y: u32) -> [u8; 4] {
+        let decoder = png::Decoder::new(std::io::Cursor::new(png));
+        let mut reader = decoder.read_info().unwrap();
+        let mut buf = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut buf).unwrap();
+        assert_eq!(info.color_type, png::ColorType::Rgba);
+        let i = (y * info.width + x) as usize * 4;
+        [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
+    }
+
+    #[test]
+    fn equal_to_filter_matches_property() {
+        let a = typed_feature("1", "A", square(0.0, 0.0, 1.0, 1.0));
+        let b = typed_feature("2", "B", square(1.0, 0.0, 2.0, 1.0));
+        let filter_a = eq_type("A");
+        let filter_b = eq_type("B");
+        assert!(feature_matches_filter(&a, &filter_a, false));
+        assert!(!feature_matches_filter(&a, &filter_b, false));
+        assert!(feature_matches_filter(&b, &filter_b, false));
+        assert!(!feature_matches_filter(&b, &filter_a, false));
+    }
+
+    #[test]
+    fn else_filter_only_when_unmatched() {
+        let a = typed_feature("1", "A", square(0.0, 0.0, 1.0, 1.0));
+        assert!(feature_matches_filter(&a, &Filter::Else, false));
+        assert!(!feature_matches_filter(&a, &Filter::Else, true));
+    }
+
+    #[test]
+    fn unsupported_filter_matches_nothing() {
+        let a = typed_feature("1", "A", square(0.0, 0.0, 1.0, 1.0));
+        assert!(!feature_matches_filter(
+            &a,
+            &Filter::Unsupported("PropertyIsLike".into()),
+            false
+        ));
+    }
+
+    #[test]
+    fn between_filter_is_inclusive() {
+        let feature = Feature::new(
+            Some("1".into()),
+            square(0.0, 0.0, 1.0, 1.0),
+            serde_json::json!({"pop": 500}),
+        );
+        let filter = Filter::Between {
+            property: "pop".into(),
+            lower: "0".into(),
+            upper: "999".into(),
+        };
+        assert!(feature_matches_filter(&feature, &filter, false));
+        let high = Feature::new(
+            Some("2".into()),
+            square(0.0, 0.0, 1.0, 1.0),
+            serde_json::json!({"pop": 1000}),
+        );
+        assert!(!feature_matches_filter(&high, &filter, false));
+    }
+
+    #[test]
+    fn first_equal_to_rule_claims_feature() {
+        let a = typed_feature("1", "A", square(0.0, 0.0, 1.0, 1.0));
+        let b = typed_feature("2", "B", square(1.0, 0.0, 2.0, 1.0));
+        let rules = vec![
+            fill_rule(Some(eq_type("A")), "#FF0000", None),
+            fill_rule(Some(eq_type("B")), "#0000FF", None),
+        ];
+        assert_eq!(matching_rule_index(&a, &rules, 1.0), Some(0));
+        assert_eq!(matching_rule_index(&b, &rules, 1.0), Some(1));
+    }
+
+    #[test]
+    fn else_rule_catches_unmatched_features() {
+        let a = typed_feature("1", "A", square(0.0, 0.0, 1.0, 1.0));
+        let b = typed_feature("2", "B", square(1.0, 0.0, 2.0, 1.0));
+        let rules = vec![
+            fill_rule(Some(eq_type("A")), "#FF0000", None),
+            fill_rule(Some(Filter::Else), "#00FF00", None),
+        ];
+        assert_eq!(matching_rule_index(&a, &rules, 1.0), Some(0));
+        assert_eq!(matching_rule_index(&b, &rules, 1.0), Some(1));
+    }
+
+    #[test]
+    fn min_scale_skips_rule() {
+        let a = typed_feature("1", "A", square(0.0, 0.0, 1.0, 1.0));
+        let rules = vec![fill_rule(Some(eq_type("A")), "#FF0000", Some(10_000.0))];
+        assert_eq!(matching_rule_index(&a, &rules, 139.0), None);
+        assert_eq!(matching_rule_index(&a, &rules, 10_000.0), Some(0));
+        assert_eq!(matching_rule_index(&a, &rules, 9_999.0), None);
+    }
+
+    #[test]
+    fn max_scale_is_exclusive() {
+        let a = typed_feature("1", "A", square(0.0, 0.0, 1.0, 1.0));
+        let mut rule = fill_rule(Some(eq_type("A")), "#FF0000", None);
+        rule.max_scale = Some(500.0);
+        let rules = vec![rule];
+        assert_eq!(matching_rule_index(&a, &rules, 499.0), Some(0));
+        assert_eq!(matching_rule_index(&a, &rules, 500.0), None);
+    }
+
+    #[test]
+    fn scale_denominator_uses_ogc_pixel_size() {
+        let denom = scale_denominator(&[0.0, 0.0, 256.0 * 0.000_28, 1.0], 256);
+        assert!((denom - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn render_map_applies_categorized_equal_to_filters() {
+        let request = map_request("0,0,20,10", 200, 100);
+        let layer = RenderLayer {
+            name: "landuse".to_string(),
+            features: vec![
+                typed_feature("1", "A", square(0.0, 0.0, 10.0, 10.0)),
+                typed_feature("2", "B", square(10.0, 0.0, 20.0, 10.0)),
+            ],
+            style: Style {
+                name: Some("by-type".into()),
+                rules: vec![
+                    fill_rule(Some(eq_type("A")), "#FF0000", None),
+                    fill_rule(Some(eq_type("B")), "#0000FF", None),
+                ],
+            },
+        };
+        let png = render_map(&request, &[layer]);
+        assert_eq!(rgba_at(&png, 50, 50), [255, 0, 0, 255]);
+        assert_eq!(rgba_at(&png, 150, 50), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn render_map_else_filter_draws_unmatched_features() {
+        let request = map_request("0,0,20,10", 200, 100);
+        let layer = RenderLayer {
+            name: "landuse".to_string(),
+            features: vec![
+                typed_feature("1", "A", square(0.0, 0.0, 10.0, 10.0)),
+                typed_feature("2", "B", square(10.0, 0.0, 20.0, 10.0)),
+            ],
+            style: Style {
+                name: None,
+                rules: vec![
+                    fill_rule(Some(eq_type("A")), "#FF0000", None),
+                    fill_rule(Some(Filter::Else), "#00FF00", None),
+                ],
+            },
+        };
+        let png = render_map(&request, &[layer]);
+        assert_eq!(rgba_at(&png, 50, 50), [255, 0, 0, 255]);
+        assert_eq!(rgba_at(&png, 150, 50), [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn render_map_skips_rule_below_min_scale() {
+        let request = map_request("0,0,10,10", 200, 100);
+        let denom = scale_denominator(&[0.0, 0.0, 10.0, 10.0], 200);
+        assert!(denom < 10_000.0);
+        let layer = RenderLayer {
+            name: "landuse".to_string(),
+            features: vec![typed_feature("1", "A", square(0.0, 0.0, 10.0, 10.0))],
+            style: Style {
+                name: None,
+                rules: vec![fill_rule(Some(eq_type("A")), "#FF0000", Some(10_000.0))],
+            },
+        };
+        let png = render_map(&request, &[layer]);
+        assert_eq!(rgba_at(&png, 100, 50), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn render_map_unsupported_filter_does_not_draw() {
+        let request = map_request("0,0,10,10", 200, 100);
+        let layer = RenderLayer {
+            name: "landuse".to_string(),
+            features: vec![typed_feature("1", "A", square(0.0, 0.0, 10.0, 10.0))],
+            style: Style {
+                name: None,
+                rules: vec![fill_rule(
+                    Some(Filter::Unsupported("PropertyIsLike".into())),
+                    "#FF0000",
+                    None,
+                )],
+            },
+        };
+        let png = render_map(&request, &[layer]);
+        assert_eq!(rgba_at(&png, 100, 50), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn render_map_parsed_categorized_sld() {
+        let sld_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<StyledLayerDescriptor version="1.0.0" xmlns:ogc="http://www.opengis.net/ogc">
+  <NamedLayer>
+    <Name>landuse</Name>
+    <UserStyle>
+      <Name>by-type</Name>
+      <Rule>
+        <ogc:Filter>
+          <ogc:PropertyIsEqualTo>
+            <ogc:PropertyName>type</ogc:PropertyName>
+            <ogc:Literal>forest</ogc:Literal>
+          </ogc:PropertyIsEqualTo>
+        </ogc:Filter>
+        <PolygonSymbolizer>
+          <Fill><CssParameter name="fill">#FF0000</CssParameter></Fill>
+          <Stroke><CssParameter name="stroke-width">0</CssParameter></Stroke>
+        </PolygonSymbolizer>
+      </Rule>
+      <Rule>
+        <ogc:Filter>
+          <ogc:PropertyIsEqualTo>
+            <ogc:PropertyName>type</ogc:PropertyName>
+            <ogc:Literal>water</ogc:Literal>
+          </ogc:PropertyIsEqualTo>
+        </ogc:Filter>
+        <PolygonSymbolizer>
+          <Fill><CssParameter name="fill">#0000FF</CssParameter></Fill>
+          <Stroke><CssParameter name="stroke-width">0</CssParameter></Stroke>
+        </PolygonSymbolizer>
+      </Rule>
+    </UserStyle>
+  </NamedLayer>
+</StyledLayerDescriptor>"#;
+        let sld = crate::sld::parse_sld(sld_xml).unwrap();
+        let style = sld.named_layers[0].styles[0].clone();
+        let request = map_request("0,0,20,10", 200, 100);
+        let layer = RenderLayer {
+            name: "landuse".to_string(),
+            features: vec![
+                typed_feature("1", "forest", square(0.0, 0.0, 10.0, 10.0)),
+                typed_feature("2", "water", square(10.0, 0.0, 20.0, 10.0)),
+            ],
+            style,
+        };
+        let png = render_map(&request, &[layer]);
+        assert_eq!(rgba_at(&png, 50, 50), [255, 0, 0, 255]);
+        assert_eq!(rgba_at(&png, 150, 50), [0, 0, 255, 255]);
     }
 }
