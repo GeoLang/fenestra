@@ -99,10 +99,7 @@ pub async fn wms(
             let config = config_with_layers(&state).await;
             xml_response(fenestra_core::capabilities::wms_capabilities_xml(&config))
         }
-        "GetMap" => match render_getmap(&state, &kvp).await {
-            Ok(png) => png_response(png),
-            Err(e) => e,
-        },
+        "GetMap" => render_getmap(&state, &kvp).await,
         other => bad_request(format!("Unsupported WMS request: {other}")),
     }
 }
@@ -118,7 +115,7 @@ async fn load_sld(kvp: &Kvp) -> Option<fenestra_core::StyledLayerDescriptor> {
     None
 }
 
-async fn render_getmap(state: &AppState, kvp: &Kvp) -> Result<Vec<u8>, Response> {
+async fn render_getmap(state: &AppState, kvp: &Kvp) -> Response {
     let layers = kvp.get("layers").unwrap_or("").to_string();
     let bbox = kvp.get("bbox").unwrap_or("-180,-90,180,90").to_string();
     let width = kvp.get("width").and_then(|s| s.parse().ok()).unwrap_or(256);
@@ -141,23 +138,25 @@ async fn render_getmap(state: &AppState, kvp: &Kvp) -> Result<Vec<u8>, Response>
         height,
         format: kvp.get("format").unwrap_or("image/png").to_string(),
     };
-    let bbox = request.parse_bbox().map_err(bad_request)?;
+    let bbox = match request.parse_bbox() {
+        Ok(b) => b,
+        Err(e) => return bad_request(e),
+    };
     let filter = norm_bbox(bbox_to_4326(bbox, crs));
     let sld = load_sld(kvp).await;
 
     let mut render_layers = Vec::new();
     for name in layers.split(',').filter(|s| !s.is_empty()) {
-        let features = state
-            .source
-            .features(name, Some(FETCH_CAP))
-            .await
-            .map_err(upstream_error)?;
+        let features = match state.source.features(name, Some(FETCH_CAP)).await {
+            Ok(f) => f,
+            Err(e) => return upstream_error(e),
+        };
         let visible = filter.filter_features(&features);
         let style = resolve_style(sld.as_ref(), name);
         render_layers.push(build_layer(name, &visible, crs, style));
     }
 
-    Ok(render_map(&request, &render_layers))
+    png_response(render_map(&request, &render_layers))
 }
 
 // ─── WFS ─────────────────────────────────────────────────────────────────────
@@ -173,15 +172,12 @@ pub async fn wfs(
             let config = config_with_layers(&state).await;
             xml_response(fenestra_core::capabilities::wfs_capabilities_xml(&config))
         }
-        "GetFeature" => match get_feature(&state, &kvp).await {
-            Ok(fc) => Json(fc).into_response(),
-            Err(e) => e,
-        },
+        "GetFeature" => get_feature(&state, &kvp).await,
         other => bad_request(format!("Unsupported WFS request: {other}")),
     }
 }
 
-async fn get_feature(state: &AppState, kvp: &Kvp) -> Result<FeatureCollection, Response> {
+async fn get_feature(state: &AppState, kvp: &Kvp) -> Response {
     let type_names = kvp
         .first(&["typenames", "typename", "type_names"])
         .unwrap_or("")
@@ -196,11 +192,14 @@ async fn get_feature(state: &AppState, kvp: &Kvp) -> Result<FeatureCollection, R
 
     let mut collected: Vec<Feature> = Vec::new();
     for name in type_names.split(',').filter(|s| !s.is_empty()) {
-        let features = state
+        let features = match state
             .source
             .features(name, count.or(Some(FETCH_CAP)))
             .await
-            .map_err(upstream_error)?;
+        {
+            Ok(f) => f,
+            Err(e) => return upstream_error(e),
+        };
         let features = match &bbox_filter {
             Some(f) => f.filter_features(&features),
             None => features,
@@ -210,7 +209,7 @@ async fn get_feature(state: &AppState, kvp: &Kvp) -> Result<FeatureCollection, R
     if let Some(count) = count {
         collected.truncate(count);
     }
-    Ok(FeatureCollection::new(collected))
+    Json(FeatureCollection::new(collected)).into_response()
 }
 
 // ─── WMTS ────────────────────────────────────────────────────────────────────

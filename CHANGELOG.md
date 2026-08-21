@@ -6,6 +6,10 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- 2026-08-21: GetMap and GetFeature helpers return `Response` directly.
+  Clippy `result_large_err` failed CI after they were extracted as
+  `Result<T, Response>`.
+
 - Honest docs (2026-08-14): the README no longer lists MVT encoding as a server
   feature, it is an unwired `fenestra-core` module and is now noted as such. The
   docs page drops the unmeasured "∞ concurrent req" and "<1ms capability gen"
