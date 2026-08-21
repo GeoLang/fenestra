@@ -192,11 +192,7 @@ async fn get_feature(state: &AppState, kvp: &Kvp) -> Response {
 
     let mut collected: Vec<Feature> = Vec::new();
     for name in type_names.split(',').filter(|s| !s.is_empty()) {
-        let features = match state
-            .source
-            .features(name, count.or(Some(FETCH_CAP)))
-            .await
-        {
+        let features = match state.source.features(name, count.or(Some(FETCH_CAP))).await {
             Ok(f) => f,
             Err(e) => return upstream_error(e),
         };
