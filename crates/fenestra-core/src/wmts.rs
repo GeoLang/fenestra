@@ -195,7 +195,28 @@ pub fn wmts_capabilities_xml(layers: &[&str], base_url: &str) -> String {
         r#"    <TileMatrixSet>
       <ows:Identifier>WebMercatorQuad</ows:Identifier>
       <ows:SupportedCRS>urn:ogc:def:crs:EPSG::3857</ows:SupportedCRS>
-    </TileMatrixSet>
+"#,
+    );
+    let origin = 20_037_508.342_789_244;
+    let scale0 = 559_082_264.028_717_3;
+    for z in 0u32..=18 {
+        let n = 2u32.pow(z);
+        let scale = scale0 / f64::from(n);
+        xml.push_str(&format!(
+            r#"      <TileMatrix>
+        <ows:Identifier>{z}</ows:Identifier>
+        <ScaleDenominator>{scale}</ScaleDenominator>
+        <TopLeftCorner>-{origin} {origin}</TopLeftCorner>
+        <TileWidth>256</TileWidth>
+        <TileHeight>256</TileHeight>
+        <MatrixWidth>{n}</MatrixWidth>
+        <MatrixHeight>{n}</MatrixHeight>
+      </TileMatrix>
+"#
+        ));
+    }
+    xml.push_str(
+        r#"    </TileMatrixSet>
   </Contents>
 </Capabilities>"#,
     );
@@ -252,5 +273,13 @@ mod tests {
         assert!(xml.contains("<ows:Identifier>roads</ows:Identifier>"));
         assert!(xml.contains("<ows:Identifier>buildings</ows:Identifier>"));
         assert!(xml.contains("WebMercatorQuad"));
+        let tms = xml
+            .split_once("<ows:Identifier>WebMercatorQuad</ows:Identifier>")
+            .and_then(|(_, rest)| rest.split_once("</TileMatrixSet>"))
+            .map(|(body, _)| body)
+            .expect("WebMercatorQuad TileMatrixSet");
+        assert!(tms.matches("<TileMatrix>").count() > 1);
+        assert!(tms.contains("<ows:Identifier>0</ows:Identifier>"));
+        assert!(tms.contains("<ows:Identifier>18</ows:Identifier>"));
     }
 }
