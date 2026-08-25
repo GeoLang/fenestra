@@ -326,7 +326,7 @@ fn describe_feature_type_extends_the_gml_feature_type() {
         )
     })
     .collect();
-    assert_eq!(properties["geometry"], "gml:SurfacePropertyType");
+    assert_eq!(properties["geometry"], "gml:PolygonPropertyType");
     assert_eq!(properties["owner"], "xsd:string");
     assert_eq!(properties["sqft"], "xsd:integer");
     assert_eq!(properties["acres"], "xsd:double");

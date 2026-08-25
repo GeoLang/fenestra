@@ -114,9 +114,11 @@ fn gml_property_type(geometry_type: &str) -> &'static str {
     match normalized.as_str() {
         "point" => "gml:PointPropertyType",
         "multipoint" => "gml:MultiPointPropertyType",
-        "linestring" | "curve" => "gml:CurvePropertyType",
+        "linestring" => "gml:LineStringPropertyType",
+        "curve" => "gml:CurvePropertyType",
         "multilinestring" | "multicurve" => "gml:MultiCurvePropertyType",
-        "polygon" | "surface" => "gml:SurfacePropertyType",
+        "polygon" => "gml:PolygonPropertyType",
+        "surface" => "gml:SurfacePropertyType",
         "multipolygon" | "multisurface" => "gml:MultiSurfacePropertyType",
         _ => GML_ANY_GEOMETRY,
     }
@@ -198,7 +200,7 @@ mod tests {
     #[test]
     fn schema_takes_the_geometry_type_from_the_collection() {
         let schema = FeatureTypeSchema::derive("parcels", "polygon", None);
-        assert_eq!(schema.geometry_property_type, "gml:SurfacePropertyType");
+        assert_eq!(schema.geometry_property_type, "gml:PolygonPropertyType");
         assert!(schema.properties.is_empty());
     }
 
