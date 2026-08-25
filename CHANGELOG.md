@@ -18,6 +18,13 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- 2026-08-25: client-consumable capabilities. WMS, WFS, WMTS and WCS declare
+  their namespace and `xsi:schemaLocation`, every OnlineResource comes from
+  `FENESTRA_PUBLIC_URL`, and each layer carries the extent of its own features
+  in the form its document requires. WFS gains `ows:OperationsMetadata`,
+  per-FeatureType `DefaultCRS`/`OtherCRS`, DescribeFeatureType, `STARTINDEX`
+  and `RESULTTYPE=hits`. WMTS layers gain the Style, Format and
+  `ows:WGS84BoundingBox` clients need. GDAL 3.11 reads all three.
 - SLD filter parsing: property comparisons, `PropertyIsBetween` and `ElseFilter`.
 - `POST /sld/symbology`, converting an SLD style into the viewer's symbology JSON and reporting every construct that shape cannot carry.
 

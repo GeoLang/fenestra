@@ -36,6 +36,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
+roxmltree = "0.20"
 tower = { version = "0.5", features = ["util"] }
 png = "0.17"
 tempfile = "3"

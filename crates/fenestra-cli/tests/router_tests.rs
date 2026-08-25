@@ -200,12 +200,187 @@ async fn ogc_items_returns_features() {
     assert_eq!(json["numberMatched"], 3);
 }
 
+const WMS_NAMESPACE: &str = "http://www.opengis.net/wms";
+const WFS_NAMESPACE: &str = "http://www.opengis.net/wfs/2.0";
+const OWS_1_1_NAMESPACE: &str = "http://www.opengis.net/ows/1.1";
+const XSD_NAMESPACE: &str = "http://www.w3.org/2001/XMLSchema";
+
+/// Extent of the three seeded Monaco points.
+const MONACO_EXTENT: [f64; 4] = [7.4206, 43.7314, 7.4278, 43.7392];
+
+fn descendants<'a>(
+    node: roxmltree::Node<'a, 'a>,
+    namespace: &str,
+    name: &str,
+) -> Vec<roxmltree::Node<'a, 'a>> {
+    node.descendants()
+        .filter(|n| n.tag_name().name() == name && n.tag_name().namespace() == Some(namespace))
+        .collect()
+}
+
+fn descendant<'a>(
+    node: roxmltree::Node<'a, 'a>,
+    namespace: &str,
+    name: &str,
+) -> roxmltree::Node<'a, 'a> {
+    descendants(node, namespace, name)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("{name} in {namespace}"))
+}
+
+fn text(node: roxmltree::Node<'_, '_>) -> String {
+    node.text().unwrap_or_default().trim().to_string()
+}
+
 #[tokio::test]
-async fn wms_getcapabilities_lists_layers() {
+async fn wms_getcapabilities_gives_each_layer_the_extent_of_its_features() {
     let (status, body) = get("/wms?request=GetCapabilities").await;
     assert_eq!(status, StatusCode::OK);
     let xml = String::from_utf8(body).unwrap();
-    assert!(xml.contains("<Name>monaco_pois</Name>"));
+    let document = roxmltree::Document::parse(&xml).expect("well formed capabilities");
+    let root = document.root_element();
+    assert_eq!(root.tag_name().namespace(), Some(WMS_NAMESPACE));
+
+    let named = descendants(root, WMS_NAMESPACE, "Layer")
+        .into_iter()
+        .find(|layer| {
+            descendants(*layer, WMS_NAMESPACE, "Name")
+                .first()
+                .is_some_and(|name| text(*name) == "monaco_pois")
+        })
+        .expect("monaco_pois layer");
+    let geographic = descendant(named, WMS_NAMESPACE, "EX_GeographicBoundingBox");
+    let bound = |name: &str| {
+        text(descendant(geographic, WMS_NAMESPACE, name))
+            .parse::<f64>()
+            .unwrap()
+    };
+    assert_eq!(bound("westBoundLongitude"), MONACO_EXTENT[0]);
+    assert_eq!(bound("southBoundLatitude"), MONACO_EXTENT[1]);
+    assert_eq!(bound("eastBoundLongitude"), MONACO_EXTENT[2]);
+    assert_eq!(bound("northBoundLatitude"), MONACO_EXTENT[3]);
+}
+
+#[tokio::test]
+async fn wfs_getcapabilities_gives_each_feature_type_the_extent_of_its_features() {
+    let (status, body) = get("/wfs?request=GetCapabilities").await;
+    assert_eq!(status, StatusCode::OK);
+    let xml = String::from_utf8(body).unwrap();
+    let document = roxmltree::Document::parse(&xml).expect("well formed capabilities");
+    let feature_type = descendant(document.root_element(), WFS_NAMESPACE, "FeatureType");
+    assert_eq!(
+        text(descendant(feature_type, WFS_NAMESPACE, "Name")),
+        "monaco_pois"
+    );
+    let bounding_box = descendant(feature_type, OWS_1_1_NAMESPACE, "WGS84BoundingBox");
+    assert_eq!(
+        text(descendant(bounding_box, OWS_1_1_NAMESPACE, "LowerCorner")),
+        "7.4206 43.7314"
+    );
+    assert_eq!(
+        text(descendant(bounding_box, OWS_1_1_NAMESPACE, "UpperCorner")),
+        "7.4278 43.7392"
+    );
+}
+
+#[tokio::test]
+async fn wfs_describefeaturetype_types_the_geometry_and_properties() {
+    let (status, body) = get("/wfs?request=DescribeFeatureType&typenames=monaco_pois").await;
+    assert_eq!(status, StatusCode::OK);
+    let xml = String::from_utf8(body).unwrap();
+    let document = roxmltree::Document::parse(&xml).expect("well formed schema");
+    let root = document.root_element();
+    assert_eq!(root.tag_name().name(), "schema");
+
+    let element = descendants(root, XSD_NAMESPACE, "element")
+        .into_iter()
+        .find(|node| node.attribute("name") == Some("monaco_pois"))
+        .expect("top level element");
+    assert_eq!(
+        element.attribute("substitutionGroup"),
+        Some("gml:AbstractFeature")
+    );
+    let properties: HashMap<&str, &str> = descendants(
+        descendant(root, XSD_NAMESPACE, "sequence"),
+        XSD_NAMESPACE,
+        "element",
+    )
+    .into_iter()
+    .map(|node| {
+        (
+            node.attribute("name").unwrap(),
+            node.attribute("type").unwrap(),
+        )
+    })
+    .collect();
+    assert_eq!(properties["geometry"], "gml:PointPropertyType");
+    assert_eq!(properties["name"], "xsd:string");
+}
+
+#[tokio::test]
+async fn wfs_describefeaturetype_without_a_typename_describes_every_type() {
+    let (status, body) = get("/wfs?request=DescribeFeatureType").await;
+    assert_eq!(status, StatusCode::OK);
+    let xml = String::from_utf8(body).unwrap();
+    let document = roxmltree::Document::parse(&xml).unwrap();
+    let types = descendants(document.root_element(), XSD_NAMESPACE, "complexType");
+    assert_eq!(types.len(), 1);
+    assert_eq!(types[0].attribute("name"), Some("monaco_poisType"));
+}
+
+#[tokio::test]
+async fn wfs_describefeaturetype_rejects_an_unknown_type() {
+    let (status, body) = get("/wfs?request=DescribeFeatureType&typenames=nope").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let xml = String::from_utf8(body).unwrap();
+    let document = roxmltree::Document::parse(&xml).expect("well formed exception report");
+    let root = document.root_element();
+    assert_eq!(root.tag_name().name(), "ExceptionReport");
+    assert_eq!(root.tag_name().namespace(), Some(OWS_1_1_NAMESPACE));
+    let exception = descendant(root, OWS_1_1_NAMESPACE, "Exception");
+    assert_eq!(exception.attribute("locator"), Some("typeNames"));
+}
+
+#[tokio::test]
+async fn wfs_getfeature_hits_counts_without_returning_features() {
+    let (status, body) = get("/wfs?request=GetFeature&typenames=monaco_pois&resulttype=hits").await;
+    assert_eq!(status, StatusCode::OK);
+    let xml = String::from_utf8(body).unwrap();
+    let document = roxmltree::Document::parse(&xml).expect("well formed hits answer");
+    let root = document.root_element();
+    assert_eq!(root.tag_name().name(), "FeatureCollection");
+    assert_eq!(root.tag_name().namespace(), Some(WFS_NAMESPACE));
+    assert_eq!(root.attribute("numberMatched"), Some("3"));
+    assert_eq!(root.attribute("numberReturned"), Some("0"));
+    assert!(root.attribute("timeStamp").is_some());
+}
+
+#[tokio::test]
+async fn wfs_getfeature_pages_with_startindex() {
+    let (_, body) = get("/wfs?request=GetFeature&typenames=monaco_pois&startindex=1&count=1").await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["numberMatched"], 3);
+    assert_eq!(json["numberReturned"], 1);
+    assert_eq!(json["features"][0]["properties"]["name"], "Palais Princier");
+}
+
+#[tokio::test]
+async fn wfs_getfeature_accepts_the_advertised_output_format() {
+    let (status, _) =
+        get("/wfs?request=GetFeature&typenames=monaco_pois&outputformat=application/json").await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn wfs_getfeature_rejects_an_output_format_it_cannot_produce() {
+    let (status, body) =
+        get("/wfs?request=GetFeature&typenames=monaco_pois&outputformat=text/xml").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let xml = String::from_utf8(body).unwrap();
+    let document = roxmltree::Document::parse(&xml).unwrap();
+    let exception = descendant(document.root_element(), OWS_1_1_NAMESPACE, "Exception");
+    assert_eq!(exception.attribute("locator"), Some("outputFormat"));
 }
 
 async fn post_sld(uri: &str, sld: &str) -> (StatusCode, serde_json::Value) {
