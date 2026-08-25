@@ -7,17 +7,31 @@ use crate::{AppState, metrics_counter};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
+use fenestra_core::crs::{EPSG_3857, EPSG_4326};
 use fenestra_core::renderer::render_map;
+use fenestra_core::xml::{OWS_1_1_NAMESPACE, OWS_2_0_NAMESPACE};
 use fenestra_core::{
-    BboxFilter, CollectionInfo, ConformanceDeclaration, Feature, FeatureCollection, LandingPage,
-    Link, ServiceConfig, WmsGetMapRequest, WmtsGetTileRequest, paginate_features, parse_sld,
-    sld_to_symbology, wmts_capabilities_xml,
+    BboxFilter, CollectionInfo, ConformanceDeclaration, DESCRIBE_FEATURE_TYPE_FORMAT, Feature,
+    FeatureTypeSchema, GEOJSON_OUTPUT_FORMAT, LandingPage, Link, ServiceConfig, WmsGetMapRequest,
+    WmtsGetTileRequest, describe_feature_type_xml, features_bbox, paginate_features, parse_sld,
+    sld_to_symbology, wfs_hits_xml, wmts_capabilities_xml,
 };
 use serde::Serialize;
 use std::collections::HashMap;
 
 /// Upper bound on features pulled from the source per request.
 const FETCH_CAP: usize = 100_000;
+
+/// Extent advertised for a collection whose features have no geometry.
+const WORLD_BBOX: [f64; 4] = [-180.0, -90.0, 180.0, 90.0];
+
+/// GetFeature output formats accepted as a request for GeoJSON.
+const GEOJSON_OUTPUT_FORMAT_ALIASES: [&str; 4] = [
+    GEOJSON_OUTPUT_FORMAT,
+    "json",
+    "geojson",
+    "application/geo+json",
+];
 
 /// OGC KVP parameters with case-insensitive keys.
 struct Kvp(HashMap<String, String>);
@@ -69,20 +83,66 @@ fn norm_bbox(b: [f64; 4]) -> BboxFilter {
     }
 }
 
+/// Fetch up to `limit` features per layer concurrently and reduce each result
+/// with `map`, keeping the order of `layers`. A layer the source cannot serve
+/// is mapped from an empty feature list.
+async fn per_layer<T: Send + 'static>(
+    state: &AppState,
+    layers: &[String],
+    limit: usize,
+    map: fn(Vec<Feature>) -> T,
+) -> Vec<T> {
+    let mut tasks = tokio::task::JoinSet::new();
+    for (index, layer) in layers.iter().enumerate() {
+        let source = state.source.clone();
+        let layer = layer.clone();
+        tasks.spawn(async move {
+            let features = source
+                .features(&layer, Some(limit))
+                .await
+                .unwrap_or_default();
+            (index, map(features))
+        });
+    }
+    let mut results: Vec<Option<T>> = (0..layers.len()).map(|_| None).collect();
+    while let Some(joined) = tasks.join_next().await {
+        let (index, value) = joined.expect("layer fetch task");
+        results[index] = Some(value);
+    }
+    results
+        .into_iter()
+        .map(|value| value.expect("every layer mapped"))
+        .collect()
+}
+
+fn extent_of(features: Vec<Feature>) -> [f64; 4] {
+    features_bbox(&features).unwrap_or(WORLD_BBOX)
+}
+
+fn first_of(features: Vec<Feature>) -> Option<Feature> {
+    features.into_iter().next()
+}
+
+/// Build the capabilities view of the source: one layer per collection, with
+/// the extent of its features.
 async fn config_with_layers(state: &AppState) -> ServiceConfig {
     let mut config = ServiceConfig::default();
-    if let Ok(collections) = state.source.collections().await {
-        config.layers = collections
-            .iter()
-            .map(|c| fenestra_core::LayerConfig {
-                name: c.id.clone(),
-                title: c.title.clone(),
-                srs: vec!["EPSG:4326".to_string(), "EPSG:3857".to_string()],
-                bbox: [-180.0, -90.0, 180.0, 90.0],
-                source: String::new(),
-            })
-            .collect();
-    }
+    let Ok(collections) = state.source.collections().await else {
+        return config;
+    };
+    let names: Vec<String> = collections.iter().map(|c| c.id.clone()).collect();
+    let extents = per_layer(state, &names, FETCH_CAP, extent_of).await;
+    config.layers = collections
+        .iter()
+        .zip(extents)
+        .map(|(collection, bbox)| fenestra_core::LayerConfig {
+            name: collection.id.clone(),
+            title: collection.title.clone(),
+            srs: vec![EPSG_4326.to_string(), EPSG_3857.to_string()],
+            bbox,
+            source: String::new(),
+        })
+        .collect();
     config
 }
 
@@ -97,7 +157,10 @@ pub async fn wms(
     match kvp.get("request").unwrap_or("GetCapabilities") {
         "GetCapabilities" => {
             let config = config_with_layers(&state).await;
-            xml_response(fenestra_core::capabilities::wms_capabilities_xml(&config))
+            xml_response(fenestra_core::capabilities::wms_capabilities_xml(
+                &config,
+                &state.base_url,
+            ))
         }
         "GetMap" => render_getmap(&state, &kvp).await,
         other => bad_request(format!("Unsupported WMS request: {other}")),
@@ -170,29 +233,131 @@ pub async fn wfs(
     match kvp.get("request").unwrap_or("GetCapabilities") {
         "GetCapabilities" => {
             let config = config_with_layers(&state).await;
-            xml_response(fenestra_core::capabilities::wfs_capabilities_xml(&config))
+            xml_response(fenestra_core::capabilities::wfs_capabilities_xml(
+                &config,
+                &state.base_url,
+            ))
         }
+        "DescribeFeatureType" => describe_feature_type(&state, &kvp).await,
         "GetFeature" => get_feature(&state, &kvp).await,
-        other => bad_request(format!("Unsupported WFS request: {other}")),
+        other => wfs_exception(
+            StatusCode::BAD_REQUEST,
+            "OperationNotSupported",
+            "request",
+            format!("Unsupported WFS request: {other}"),
+        ),
     }
 }
 
-async fn get_feature(state: &AppState, kvp: &Kvp) -> Response {
-    let type_names = kvp
-        .first(&["typenames", "typename", "type_names"])
+/// OWS ExceptionReport response in the OWS Common version WFS 2.0 is bound to.
+fn wfs_exception(
+    status: StatusCode,
+    code: &str,
+    locator: &str,
+    message: impl std::fmt::Display,
+) -> Response {
+    (
+        status,
+        [("content-type", "application/xml")],
+        fenestra_core::ows_exception_xml(OWS_1_1_NAMESPACE, code, locator, &message.to_string()),
+    )
+        .into_response()
+}
+
+/// The type names a WFS request asks for, with any namespace prefix dropped.
+fn requested_type_names(kvp: &Kvp) -> Vec<&str> {
+    kvp.first(&["typenames", "typename", "type_names"])
         .unwrap_or("")
-        .to_string();
+        .split(',')
+        .map(|name| name.rsplit(':').next().unwrap_or(name).trim())
+        .filter(|name| !name.is_empty())
+        .collect()
+}
+
+async fn describe_feature_type(state: &AppState, kvp: &Kvp) -> Response {
+    let collections = match state.source.collections().await {
+        Ok(c) => c,
+        Err(e) => return upstream_error(e),
+    };
+    let requested = requested_type_names(kvp);
+    let selected: Vec<&Collection> = if requested.is_empty() {
+        collections.iter().collect()
+    } else {
+        let mut selected = Vec::new();
+        for name in requested {
+            let Some(collection) = collections.iter().find(|c| c.id == name) else {
+                return wfs_exception(
+                    StatusCode::NOT_FOUND,
+                    "InvalidParameterValue",
+                    "typeNames",
+                    format!("unknown feature type {name}"),
+                );
+            };
+            selected.push(collection);
+        }
+        selected
+    };
+
+    let names: Vec<String> = selected.iter().map(|c| c.id.clone()).collect();
+    let samples = per_layer(state, &names, 1, first_of).await;
+    let schemas: Vec<FeatureTypeSchema> = selected
+        .iter()
+        .zip(&samples)
+        .map(|(collection, sample)| {
+            FeatureTypeSchema::derive(&collection.id, &collection.geometry_type, sample.as_ref())
+        })
+        .collect();
+    (
+        [("content-type", DESCRIBE_FEATURE_TYPE_FORMAT)],
+        describe_feature_type_xml(&schemas),
+    )
+        .into_response()
+}
+
+async fn get_feature(state: &AppState, kvp: &Kvp) -> Response {
+    if let Some(format) = kvp.first(&["outputformat", "output_format"])
+        && !GEOJSON_OUTPUT_FORMAT_ALIASES
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(format))
+    {
+        return wfs_exception(
+            StatusCode::BAD_REQUEST,
+            "InvalidParameterValue",
+            "outputFormat",
+            format!("unsupported outputFormat {format}, only {GEOJSON_OUTPUT_FORMAT}"),
+        );
+    }
+    if let Some(srs_name) = kvp.first(&["srsname", "srs_name"])
+        && !crs_matches(EPSG_4326, srs_name)
+    {
+        return wfs_exception(
+            StatusCode::BAD_REQUEST,
+            "InvalidParameterValue",
+            "srsName",
+            format!("unsupported srsName {srs_name}, features are served in {EPSG_4326}"),
+        );
+    }
+    let result_type = kvp
+        .first(&["resulttype", "result_type"])
+        .unwrap_or("results");
+    let hits_only = result_type.eq_ignore_ascii_case("hits");
     let count = kvp
         .first(&["count", "maxfeatures"])
         .and_then(|s| s.parse::<usize>().ok());
+    let start_index = kvp
+        .first(&["startindex", "start_index"])
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(0);
     let bbox_filter = kvp
         .get("bbox")
         .and_then(BboxFilter::parse)
         .map(|f| norm_bbox([f.min_x, f.min_y, f.max_x, f.max_y]));
 
+    // numberMatched and resultType=hits both need the whole set, so the page
+    // narrows the answer rather than the fetch
     let mut collected: Vec<Feature> = Vec::new();
-    for name in type_names.split(',').filter(|s| !s.is_empty()) {
-        let features = match state.source.features(name, count.or(Some(FETCH_CAP))).await {
+    for name in requested_type_names(kvp) {
+        let features = match state.source.features(name, Some(FETCH_CAP)).await {
             Ok(f) => f,
             Err(e) => return upstream_error(e),
         };
@@ -202,10 +367,17 @@ async fn get_feature(state: &AppState, kvp: &Kvp) -> Response {
         };
         collected.extend(features);
     }
-    if let Some(count) = count {
-        collected.truncate(count);
+
+    if hits_only {
+        let timestamp = chrono::Utc::now().to_rfc3339();
+        return xml_response(wfs_hits_xml(collected.len(), &timestamp));
     }
-    Json(FeatureCollection::new(collected)).into_response()
+    Json(paginate_features(
+        &collected,
+        start_index,
+        count.unwrap_or(usize::MAX),
+    ))
+    .into_response()
 }
 
 // ─── WMTS ────────────────────────────────────────────────────────────────────
@@ -218,14 +390,8 @@ pub async fn wmts(
     let kvp = Kvp::new(raw);
     match kvp.get("request").unwrap_or("GetCapabilities") {
         "GetCapabilities" => {
-            let names: Vec<String> = state
-                .source
-                .collections()
-                .await
-                .map(|c| c.into_iter().map(|c| c.id).collect())
-                .unwrap_or_default();
-            let refs: Vec<&str> = names.iter().map(String::as_str).collect();
-            xml_response(wmts_capabilities_xml(&refs, &state.base_url))
+            let config = config_with_layers(&state).await;
+            xml_response(wmts_capabilities_xml(&config.layers, &state.base_url))
         }
         "GetTile" => {
             let layer = kvp.get("layer").unwrap_or("");
@@ -311,7 +477,7 @@ fn wcs_exception(
     (
         status,
         [("content-type", "application/xml")],
-        fenestra_core::ows_exception_xml(code, locator, &message.to_string()),
+        fenestra_core::ows_exception_xml(OWS_2_0_NAMESPACE, code, locator, &message.to_string()),
     )
         .into_response()
 }

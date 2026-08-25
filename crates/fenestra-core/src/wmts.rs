@@ -1,4 +1,15 @@
 use crate::Error;
+use crate::config::LayerConfig;
+use crate::crs::EPSG_3857_URN;
+use crate::xml::{XSI_NAMESPACE, escape};
+
+const WMTS_NAMESPACE: &str = "http://www.opengis.net/wmts/1.0";
+const WMTS_SCHEMA_LOCATION: &str =
+    "http://schemas.opengis.net/wmts/1.0/wmtsGetCapabilities_response.xsd";
+/// The only tile matrix set this server serves.
+const WEB_MERCATOR_QUAD: &str = "WebMercatorQuad";
+/// The only style, since tiles render unstyled.
+const DEFAULT_STYLE: &str = "default";
 
 /// WMTS GetTile request parameters.
 #[derive(Debug, Clone)]
@@ -160,11 +171,14 @@ fn adler32(data: &[u8]) -> u32 {
 }
 
 /// Generate a WMTS capabilities XML document.
-pub fn wmts_capabilities_xml(layers: &[&str], base_url: &str) -> String {
-    let mut xml = String::from(
+pub fn wmts_capabilities_xml(layers: &[LayerConfig], base_url: &str) -> String {
+    let mut xml = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
-<Capabilities xmlns="http://www.opengis.net/wmts/1.0"
+<Capabilities xmlns="{WMTS_NAMESPACE}"
   xmlns:ows="http://www.opengis.net/ows/1.1"
+  xmlns:xlink="http://www.w3.org/1999/xlink"
+  xmlns:xsi="{XSI_NAMESPACE}"
+  xsi:schemaLocation="{WMTS_NAMESPACE} {WMTS_SCHEMA_LOCATION}"
   version="1.0.0">
   <ows:ServiceIdentification>
     <ows:Title>Fenestra WMTS</ows:Title>
@@ -172,31 +186,44 @@ pub fn wmts_capabilities_xml(layers: &[&str], base_url: &str) -> String {
     <ows:ServiceTypeVersion>1.0.0</ows:ServiceTypeVersion>
   </ows:ServiceIdentification>
   <Contents>
-"#,
+"#
     );
 
+    // element order follows the WMTS 1.0 schema: clients reject a Layer that
+    // reorders Style, Format, TileMatrixSetLink and ResourceURL
     for layer in layers {
+        let name = escape(&layer.name);
+        let title = escape(&layer.title);
+        let [min_x, min_y, max_x, max_y] = layer.bbox;
         xml.push_str(&format!(
             r#"    <Layer>
-      <ows:Title>{layer}</ows:Title>
-      <ows:Identifier>{layer}</ows:Identifier>
+      <ows:Title>{title}</ows:Title>
+      <ows:WGS84BoundingBox>
+        <ows:LowerCorner>{min_x} {min_y}</ows:LowerCorner>
+        <ows:UpperCorner>{max_x} {max_y}</ows:UpperCorner>
+      </ows:WGS84BoundingBox>
+      <ows:Identifier>{name}</ows:Identifier>
+      <Style isDefault="true">
+        <ows:Identifier>{DEFAULT_STYLE}</ows:Identifier>
+      </Style>
+      <Format>image/png</Format>
+      <TileMatrixSetLink>
+        <TileMatrixSet>{WEB_MERCATOR_QUAD}</TileMatrixSet>
+      </TileMatrixSetLink>
       <ResourceURL format="image/png"
         resourceType="tile"
-        template="{base_url}/wmts/{layer}/{{TileMatrixSet}}/{{TileMatrix}}/{{TileRow}}/{{TileCol}}.png"/>
-      <TileMatrixSetLink>
-        <TileMatrixSet>WebMercatorQuad</TileMatrixSet>
-      </TileMatrixSetLink>
+        template="{base_url}/wmts/{name}/{{TileMatrixSet}}/{{TileMatrix}}/{{TileRow}}/{{TileCol}}.png"/>
     </Layer>
 "#
         ));
     }
 
-    xml.push_str(
+    xml.push_str(&format!(
         r#"    <TileMatrixSet>
-      <ows:Identifier>WebMercatorQuad</ows:Identifier>
-      <ows:SupportedCRS>urn:ogc:def:crs:EPSG::3857</ows:SupportedCRS>
-"#,
-    );
+      <ows:Identifier>{WEB_MERCATOR_QUAD}</ows:Identifier>
+      <ows:SupportedCRS>{EPSG_3857_URN}</ows:SupportedCRS>
+"#
+    ));
     let origin = 20_037_508.342_789_244;
     let scale0 = 559_082_264.028_717_3;
     for z in 0u32..=18 {
@@ -266,9 +293,20 @@ mod tests {
         assert_eq!(&resp.data[0..4], &[137, 80, 78, 71]);
     }
 
+    fn layer(name: &str) -> LayerConfig {
+        LayerConfig {
+            name: name.to_string(),
+            title: name.to_string(),
+            srs: vec![crate::crs::EPSG_4326.to_string()],
+            bbox: [-1.0, -2.0, 3.0, 4.0],
+            source: String::new(),
+        }
+    }
+
     #[test]
     fn test_wmts_capabilities_xml() {
-        let xml = wmts_capabilities_xml(&["roads", "buildings"], "http://localhost:8080");
+        let layers = [layer("roads"), layer("buildings")];
+        let xml = wmts_capabilities_xml(&layers, "http://localhost:8080");
         assert!(xml.contains("Fenestra WMTS"));
         assert!(xml.contains("<ows:Identifier>roads</ows:Identifier>"));
         assert!(xml.contains("<ows:Identifier>buildings</ows:Identifier>"));

@@ -1,7 +1,11 @@
 //! OGC Web Coverage Service (WCS) — request/response types for coverage data access.
 
 use crate::Error;
+use crate::xml::XSI_NAMESPACE;
 use serde::{Deserialize, Serialize};
+
+const WCS_NAMESPACE: &str = "http://www.opengis.net/wcs/2.0";
+const WCS_SCHEMA_LOCATION: &str = "http://schemas.opengis.net/wcs/2.0/wcsAll.xsd";
 
 /// WCS GetCoverage request parameters.
 #[derive(Debug, Clone, Deserialize)]
@@ -81,9 +85,13 @@ pub fn wcs_capabilities_xml(title: &str, coverage_ids: &[&str]) -> String {
     let mut xml = String::new();
     xml.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     xml.push('\n');
-    xml.push_str(concat!(
-        r#"<wcs:Capabilities version="2.0.1" xmlns:wcs="http://www.opengis.net/wcs/2.0""#,
-        r#" xmlns:ows="http://www.opengis.net/ows/2.0">"#,
+    xml.push_str(&format!(
+        concat!(
+            r#"<wcs:Capabilities version="2.0.1" xmlns:wcs="{}""#,
+            r#" xmlns:ows="http://www.opengis.net/ows/2.0" xmlns:xsi="{}""#,
+            r#" xsi:schemaLocation="{} {}">"#,
+        ),
+        WCS_NAMESPACE, XSI_NAMESPACE, WCS_NAMESPACE, WCS_SCHEMA_LOCATION
     ));
     xml.push('\n');
     xml.push_str("  <ows:ServiceIdentification>\n");
@@ -185,21 +193,23 @@ pub fn describe_coverage_xml(descriptions: &[CoverageDescription]) -> String {
     xml
 }
 
-/// Generate an OWS 2.0 ExceptionReport XML document.
-pub fn ows_exception_xml(code: &str, locator: &str, message: &str) -> String {
+/// Generate an ExceptionReport XML document. `ows_namespace` picks the OWS
+/// Common version the calling service is bound to: WCS 2.0 uses OWS 2.0 and
+/// WFS 2.0 uses OWS 1.1.
+pub fn ows_exception_xml(ows_namespace: &str, code: &str, locator: &str, message: &str) -> String {
     let mut xml = String::new();
     xml.push_str(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     xml.push('\n');
-    xml.push_str(concat!(
-        r#"<ows:ExceptionReport version="2.0.0""#,
-        r#" xmlns:ows="http://www.opengis.net/ows/2.0">"#,
+    xml.push_str(&format!(
+        r#"<ows:ExceptionReport version="2.0.0" xmlns:ows="{ows_namespace}">"#
     ));
     xml.push('\n');
     xml.push_str(&format!(
         "  <ows:Exception exceptionCode=\"{code}\" locator=\"{locator}\">\n"
     ));
     xml.push_str(&format!(
-        "    <ows:ExceptionText>{message}</ows:ExceptionText>\n"
+        "    <ows:ExceptionText>{}</ows:ExceptionText>\n",
+        crate::xml::escape(message)
     ));
     xml.push_str("  </ows:Exception>\n");
     xml.push_str("</ows:ExceptionReport>\n");
@@ -394,9 +404,15 @@ mod tests {
 
     #[test]
     fn test_ows_exception_xml() {
-        let xml = ows_exception_xml("NoSuchCoverage", "coverageId", "coverage dem not found");
+        let xml = ows_exception_xml(
+            crate::xml::OWS_2_0_NAMESPACE,
+            "NoSuchCoverage",
+            "coverageId",
+            "coverage dem not found",
+        );
         assert!(xml.contains("exceptionCode=\"NoSuchCoverage\""));
         assert!(xml.contains("coverage dem not found"));
+        assert!(xml.contains(r#"xmlns:ows="http://www.opengis.net/ows/2.0""#));
     }
 
     #[test]

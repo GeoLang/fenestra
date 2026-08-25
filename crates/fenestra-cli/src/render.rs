@@ -5,6 +5,7 @@
 //! core renderer maps world coordinates to pixels. bbox axis order is treated
 //! as minx,miny,maxx,maxy (lon/lat) for both CRS.
 
+use fenestra_core::crs::{lonlat_to_web_mercator, web_mercator_to_lonlat};
 use fenestra_core::renderer::RenderLayer;
 use fenestra_core::{Feature, Geometry, Style, StyledLayerDescriptor};
 
@@ -24,31 +25,13 @@ pub fn parse_crs(s: &str) -> Crs {
     }
 }
 
-const EARTH_RADIUS: f64 = 6_378_137.0;
-
-pub fn lonlat_to_merc(lon: f64, lat: f64) -> [f64; 2] {
-    let x = EARTH_RADIUS * lon.to_radians();
-    let lat = lat.clamp(-89.99, 89.99);
-    let y = EARTH_RADIUS
-        * (std::f64::consts::FRAC_PI_4 + lat.to_radians() / 2.0)
-            .tan()
-            .ln();
-    [x, y]
-}
-
-pub fn merc_to_lonlat(x: f64, y: f64) -> [f64; 2] {
-    let lon = (x / EARTH_RADIUS).to_degrees();
-    let lat = (2.0 * (y / EARTH_RADIUS).exp().atan() - std::f64::consts::FRAC_PI_2).to_degrees();
-    [lon, lat]
-}
-
 /// Convert a request bbox to EPSG:4326 for filtering 4326 features.
 pub fn bbox_to_4326(bbox: [f64; 4], crs: Crs) -> [f64; 4] {
     match crs {
         Crs::Geographic => bbox,
         Crs::WebMercator => {
-            let min = merc_to_lonlat(bbox[0], bbox[1]);
-            let max = merc_to_lonlat(bbox[2], bbox[3]);
+            let min = web_mercator_to_lonlat(bbox[0], bbox[1]);
+            let max = web_mercator_to_lonlat(bbox[2], bbox[3]);
             [min[0], min[1], max[0], max[1]]
         }
     }
@@ -57,7 +40,7 @@ pub fn bbox_to_4326(bbox: [f64; 4], crs: Crs) -> [f64; 4] {
 fn project_point(c: [f64; 2], crs: Crs) -> [f64; 2] {
     match crs {
         Crs::Geographic => c,
-        Crs::WebMercator => lonlat_to_merc(c[0], c[1]),
+        Crs::WebMercator => lonlat_to_web_mercator(c[0], c[1]),
     }
 }
 

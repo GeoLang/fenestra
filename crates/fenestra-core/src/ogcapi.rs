@@ -24,6 +24,36 @@ pub enum Geometry {
     },
 }
 
+impl Geometry {
+    /// The GeoJSON type name of this geometry.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Geometry::Point { .. } => "Point",
+            Geometry::LineString { .. } => "LineString",
+            Geometry::Polygon { .. } => "Polygon",
+            Geometry::MultiPoint { .. } => "MultiPoint",
+            Geometry::MultiLineString { .. } => "MultiLineString",
+            Geometry::MultiPolygon { .. } => "MultiPolygon",
+        }
+    }
+
+    /// Every coordinate in this geometry, in document order.
+    pub fn coordinates(&self) -> Vec<[f64; 2]> {
+        match self {
+            Geometry::Point { coordinates } => vec![*coordinates],
+            Geometry::LineString { coordinates } | Geometry::MultiPoint { coordinates } => {
+                coordinates.clone()
+            }
+            Geometry::Polygon { coordinates } | Geometry::MultiLineString { coordinates } => {
+                coordinates.concat()
+            }
+            Geometry::MultiPolygon { coordinates } => {
+                coordinates.iter().flat_map(|part| part.concat()).collect()
+            }
+        }
+    }
+}
+
 /// A GeoJSON Feature.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Feature {
@@ -220,6 +250,31 @@ impl BboxFilter {
             None => false,
         }
     }
+}
+
+/// Extent of these features as `[min_x, min_y, max_x, max_y]`, `None` when
+/// none of them carries a geometry.
+pub fn features_bbox(features: &[Feature]) -> Option<[f64; 4]> {
+    let mut bbox = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    let mut seen = false;
+    for feature in features {
+        let Some(geometry) = &feature.geometry else {
+            continue;
+        };
+        for coordinate in geometry.coordinates() {
+            seen = true;
+            bbox[0] = bbox[0].min(coordinate[0]);
+            bbox[1] = bbox[1].min(coordinate[1]);
+            bbox[2] = bbox[2].max(coordinate[0]);
+            bbox[3] = bbox[3].max(coordinate[1]);
+        }
+    }
+    seen.then_some(bbox)
 }
 
 /// Paginate a feature list.
