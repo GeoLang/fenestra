@@ -1,7 +1,8 @@
 //! Styled Layer Descriptor (SLD) / Symbology Encoding (SE) parser.
 //!
-//! Parses basic SLD/SE XML for point, line, and polygon symbolizers
-//! with fill, stroke, and mark styling.
+//! Parses SLD/SE XML for point, line, polygon, and text symbolizers
+//! with fill, stroke, and mark styling. A rule keeps every symbolizer
+//! in document order.
 
 use crate::Error;
 
@@ -195,37 +196,7 @@ fn parse_rule(content: &str) -> Rule {
     let max_scale =
         extract_tag_content(content, "MaxScaleDenominator").and_then(|s| s.parse::<f64>().ok());
 
-    let mut symbolizers = Vec::new();
-
-    // Point symbolizer
-    if let Some(ps_start) = find_tag(content, 0, "PointSymbolizer") {
-        let ps_end =
-            find_closing_tag(content, ps_start, "PointSymbolizer").unwrap_or(content.len());
-        let ps_content = &content[ps_start..ps_end];
-        symbolizers.push(Symbolizer::Point(parse_point_symbolizer(ps_content)));
-    }
-
-    // Line symbolizer
-    if let Some(ls_start) = find_tag(content, 0, "LineSymbolizer") {
-        let ls_end = find_closing_tag(content, ls_start, "LineSymbolizer").unwrap_or(content.len());
-        let ls_content = &content[ls_start..ls_end];
-        symbolizers.push(Symbolizer::Line(parse_line_symbolizer(ls_content)));
-    }
-
-    // Polygon symbolizer
-    if let Some(poly_start) = find_tag(content, 0, "PolygonSymbolizer") {
-        let poly_end =
-            find_closing_tag(content, poly_start, "PolygonSymbolizer").unwrap_or(content.len());
-        let poly_content = &content[poly_start..poly_end];
-        symbolizers.push(Symbolizer::Polygon(parse_polygon_symbolizer(poly_content)));
-    }
-
-    // Text symbolizer
-    if let Some(ts_start) = find_tag(content, 0, "TextSymbolizer") {
-        let ts_end = find_closing_tag(content, ts_start, "TextSymbolizer").unwrap_or(content.len());
-        let ts_content = &content[ts_start..ts_end];
-        symbolizers.push(Symbolizer::Text(parse_text_symbolizer(ts_content)));
-    }
+    let symbolizers = parse_symbolizers(content);
 
     Rule {
         name,
@@ -234,6 +205,38 @@ fn parse_rule(content: &str) -> Rule {
         max_scale,
         symbolizers,
     }
+}
+
+const SYMBOLIZER_TAGS: [&str; 4] = [
+    "PointSymbolizer",
+    "LineSymbolizer",
+    "PolygonSymbolizer",
+    "TextSymbolizer",
+];
+
+fn parse_symbolizers(content: &str) -> Vec<Symbolizer> {
+    let mut symbolizers = Vec::new();
+    let mut pos = 0;
+    while let Some((start, tag)) = next_symbolizer_tag(content, pos) {
+        let end = find_closing_tag(content, start, tag).unwrap_or(content.len());
+        let body = &content[start..end];
+        symbolizers.push(match tag {
+            "PointSymbolizer" => Symbolizer::Point(parse_point_symbolizer(body)),
+            "LineSymbolizer" => Symbolizer::Line(parse_line_symbolizer(body)),
+            "PolygonSymbolizer" => Symbolizer::Polygon(parse_polygon_symbolizer(body)),
+            "TextSymbolizer" => Symbolizer::Text(parse_text_symbolizer(body)),
+            _ => unreachable!(),
+        });
+        pos = end;
+    }
+    symbolizers
+}
+
+fn next_symbolizer_tag(content: &str, pos: usize) -> Option<(usize, &'static str)> {
+    SYMBOLIZER_TAGS
+        .iter()
+        .filter_map(|tag| find_tag(content, pos, tag).map(|start| (start, *tag)))
+        .min_by_key(|(start, _)| *start)
 }
 
 const COMPARISON_TAGS: [(&str, ComparisonOp); 6] = [
@@ -733,5 +736,73 @@ mod tests {
         let rule = &sld.named_layers[0].styles[0].rules[0];
         assert_eq!(rule.min_scale, Some(10000.0));
         assert_eq!(rule.max_scale, Some(500000.0));
+    }
+
+    #[test]
+    fn parse_keeps_every_symbolizer_in_document_order() {
+        let sld_xml = r#"<StyledLayerDescriptor version="1.0.0">
+  <NamedLayer>
+    <Name>roads</Name>
+    <UserStyle>
+      <Rule>
+        <LineSymbolizer>
+          <Stroke>
+            <CssParameter name="stroke">#000000</CssParameter>
+            <CssParameter name="stroke-width">8</CssParameter>
+          </Stroke>
+        </LineSymbolizer>
+        <LineSymbolizer>
+          <Stroke>
+            <CssParameter name="stroke">#FFFF00</CssParameter>
+            <CssParameter name="stroke-width">2</CssParameter>
+          </Stroke>
+        </LineSymbolizer>
+        <TextSymbolizer>
+          <Label><PropertyName>name</PropertyName></Label>
+          <Fill>
+            <CssParameter name="fill">#111111</CssParameter>
+          </Fill>
+        </TextSymbolizer>
+        <PointSymbolizer>
+          <Graphic>
+            <Mark>
+              <WellKnownName>circle</WellKnownName>
+            </Mark>
+            <Size>6</Size>
+          </Graphic>
+        </PointSymbolizer>
+      </Rule>
+    </UserStyle>
+  </NamedLayer>
+</StyledLayerDescriptor>"#;
+
+        let sld = parse_sld(sld_xml).unwrap();
+        let symbolizers = &sld.named_layers[0].styles[0].rules[0].symbolizers;
+        assert_eq!(symbolizers.len(), 4);
+        match &symbolizers[0] {
+            Symbolizer::Line(line) => assert_eq!(line.stroke.width, Some(8.0)),
+            other => panic!("first symbolizer should be the wide line, got {other:?}"),
+        }
+        match &symbolizers[1] {
+            Symbolizer::Line(line) => {
+                assert_eq!(line.stroke.color.as_deref(), Some("#FFFF00"));
+                assert_eq!(line.stroke.width, Some(2.0));
+            }
+            other => panic!("second symbolizer should be the thin line, got {other:?}"),
+        }
+        match &symbolizers[2] {
+            Symbolizer::Text(text) => {
+                assert_eq!(text.label_property, "name");
+                assert_eq!(
+                    text.fill.as_ref().unwrap().color.as_deref(),
+                    Some("#111111")
+                );
+            }
+            other => panic!("third symbolizer should be text, got {other:?}"),
+        }
+        assert!(
+            matches!(symbolizers[3], Symbolizer::Point(_)),
+            "point comes last even though the old parser always collected points first"
+        );
     }
 }

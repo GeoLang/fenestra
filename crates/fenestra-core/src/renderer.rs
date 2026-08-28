@@ -8,8 +8,20 @@
 //! Falls back to CPU when no GPU is present or for headless CI/server environments.
 
 use crate::ogcapi::{Feature, Geometry};
-use crate::sld::{ComparisonOp, Fill, Filter, Rule, Stroke, Style, Symbolizer};
+use crate::sld::{ComparisonOp, Fill, Filter, Rule, Stroke, Style, Symbolizer, TextSymbolizer};
 use crate::wms::WmsGetMapRequest;
+use std::sync::OnceLock;
+
+/// Bundled Caladea (Apache-2.0) so GetMap labels do not need a system font.
+const LABEL_FONT: &[u8] = include_bytes!("../fonts/Caladea-Regular.ttf");
+
+fn label_font() -> &'static fontdue::Font {
+    static FONT: OnceLock<fontdue::Font> = OnceLock::new();
+    FONT.get_or_init(|| {
+        fontdue::Font::from_bytes(LABEL_FONT, fontdue::FontSettings::default())
+            .expect("bundled Caladea is a valid font")
+    })
+}
 
 /// A map layer with features and styling.
 pub struct RenderLayer {
@@ -239,13 +251,14 @@ mod cpu {
                 continue;
             };
             for symbolizer in &rule.symbolizers {
-                render_feature(pixmap, geom, symbolizer, transform);
+                render_feature(pixmap, feature, geom, symbolizer, transform);
             }
         }
     }
 
     fn render_feature(
         pixmap: &mut tiny_skia::Pixmap,
+        feature: &Feature,
         geom: &Geometry,
         symbolizer: &Symbolizer,
         transform: &MapTransform,
@@ -282,7 +295,144 @@ mod cpu {
                 let width = ps.stroke.as_ref().and_then(|s| s.width).unwrap_or(1.0) as f32;
                 render_polygons(pixmap, geom, transform, fill, stroke, width);
             }
-            Symbolizer::Text(_) => {}
+            Symbolizer::Text(ts) => {
+                render_text(pixmap, feature, geom, ts, transform);
+            }
+        }
+    }
+
+    fn render_text(
+        pixmap: &mut tiny_skia::Pixmap,
+        feature: &Feature,
+        geom: &Geometry,
+        ts: &TextSymbolizer,
+        transform: &MapTransform,
+    ) {
+        let Some(text) = property_text(feature, &ts.label_property) else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        let Some((wx, wy)) = label_anchor(geom) else {
+            return;
+        };
+        let size = ts.font_size.unwrap_or(10.0) as f32;
+        if size <= 0.0 {
+            return;
+        }
+        let color = ts
+            .fill
+            .as_ref()
+            .map(fill_color)
+            .unwrap_or(tiny_skia::Color::BLACK);
+        let (px, py) = transform.world_to_pixel(wx, wy);
+        blit_label(pixmap, &text, px, py, size, color);
+    }
+
+    fn label_anchor(geom: &Geometry) -> Option<(f64, f64)> {
+        match geom {
+            Geometry::Point { coordinates } => Some((coordinates[0], coordinates[1])),
+            Geometry::MultiPoint { coordinates } => coordinates.first().map(|c| (c[0], c[1])),
+            Geometry::LineString { coordinates } => mean_coord(coordinates),
+            Geometry::MultiLineString { coordinates } => {
+                coordinates.first().and_then(|line| mean_coord(line))
+            }
+            Geometry::Polygon { coordinates } => {
+                coordinates.first().and_then(|ring| mean_coord(ring))
+            }
+            Geometry::MultiPolygon { coordinates } => coordinates
+                .first()
+                .and_then(|poly| poly.first().and_then(|ring| mean_coord(ring))),
+        }
+    }
+
+    fn mean_coord(coords: &[[f64; 2]]) -> Option<(f64, f64)> {
+        let n = coords.len();
+        if n == 0 {
+            return None;
+        }
+        let end = if n >= 2 && coords[0] == coords[n - 1] {
+            n - 1
+        } else {
+            n
+        };
+        if end == 0 {
+            return None;
+        }
+        let sx: f64 = coords[..end].iter().map(|c| c[0]).sum();
+        let sy: f64 = coords[..end].iter().map(|c| c[1]).sum();
+        Some((sx / end as f64, sy / end as f64))
+    }
+
+    fn blit_label(
+        pixmap: &mut tiny_skia::Pixmap,
+        text: &str,
+        px: f32,
+        py: f32,
+        size: f32,
+        color: tiny_skia::Color,
+    ) {
+        let font = super::label_font();
+        let width: f32 = text
+            .chars()
+            .map(|ch| font.metrics(ch, size).advance_width)
+            .sum();
+        let mut pen_x = px - width / 2.0;
+        let baseline = py + size * 0.35;
+        for ch in text.chars() {
+            let (metrics, bitmap) = font.rasterize(ch, size);
+            let origin_x = (pen_x + metrics.xmin as f32).round() as i32;
+            let origin_y = (baseline - metrics.height as f32 - metrics.ymin as f32).round() as i32;
+            for row in 0..metrics.height {
+                for col in 0..metrics.width {
+                    let coverage = bitmap[row * metrics.width + col];
+                    blend_coverage(
+                        pixmap,
+                        origin_x + col as i32,
+                        origin_y + row as i32,
+                        color,
+                        coverage,
+                    );
+                }
+            }
+            pen_x += metrics.advance_width;
+        }
+    }
+
+    fn blend_coverage(
+        pixmap: &mut tiny_skia::Pixmap,
+        x: i32,
+        y: i32,
+        color: tiny_skia::Color,
+        coverage: u8,
+    ) {
+        if x < 0 || y < 0 {
+            return;
+        }
+        let (x, y) = (x as u32, y as u32);
+        if x >= pixmap.width() || y >= pixmap.height() {
+            return;
+        }
+        let src = color.to_color_u8();
+        let src_a = (u16::from(src.alpha()) * u16::from(coverage) / 255) as u8;
+        if src_a == 0 {
+            return;
+        }
+        let i = (y * pixmap.width() + x) as usize;
+        let pixels = pixmap.pixels_mut();
+        let dst = pixels[i];
+        let inv = 255 - u16::from(src_a);
+        let pr = u16::from(src.red()) * u16::from(src_a) / 255;
+        let pg = u16::from(src.green()) * u16::from(src_a) / 255;
+        let pb = u16::from(src.blue()) * u16::from(src_a) / 255;
+        let out_a = (u16::from(src_a) + u16::from(dst.alpha()) * inv / 255) as u8;
+        let out_r = ((pr + u16::from(dst.red()) * inv / 255) as u8).min(out_a);
+        let out_g = ((pg + u16::from(dst.green()) * inv / 255) as u8).min(out_a);
+        let out_b = ((pb + u16::from(dst.blue()) * inv / 255) as u8).min(out_a);
+        if let Some(pixel) = tiny_skia::PremultipliedColorU8::from_rgba(out_r, out_g, out_b, out_a)
+        {
+            pixels[i] = pixel;
         }
     }
 
@@ -764,7 +914,7 @@ mod gpu {
     }
 
     fn jung_layer_for_symbolizer(sym: &Symbolizer) -> jung_style::Layer {
-        use jung_style::Color;
+        use jung_style::{Color, StyleValue};
 
         match sym {
             Symbolizer::Point(ps) => {
@@ -805,7 +955,20 @@ mod gpu {
                 let width = ps.stroke.as_ref().and_then(|s| s.width).unwrap_or(1.0) as f32;
                 make_layer(Some(fill), Some(stroke), Some(width), None)
             }
-            Symbolizer::Text(_) => make_layer(None, None, None, None),
+            Symbolizer::Text(ts) => {
+                let color = ts
+                    .fill
+                    .as_ref()
+                    .and_then(|f| f.color.as_deref())
+                    .map(parse_hex_to_jung_color)
+                    .unwrap_or(Color::rgba(0, 0, 0, 255));
+                let mut layer = make_layer(None, None, None, None);
+                layer.text_field = Some(StyleValue::Literal(format!("{{{}}}", ts.label_property)));
+                layer.font_size = Some(StyleValue::Literal(ts.font_size.unwrap_or(10.0) as f32));
+                layer.font_family = ts.font_family.clone();
+                layer.text_color = Some(StyleValue::Literal(color));
+                layer
+            }
         }
     }
 
@@ -1234,5 +1397,135 @@ mod tests {
         let png = render_map(&request, &[layer]);
         assert_eq!(rgba_at(&png, 50, 50), [255, 0, 0, 255]);
         assert_eq!(rgba_at(&png, 150, 50), [0, 0, 255, 255]);
+    }
+
+    fn png_has_rgba(png: &[u8], want: [u8; 4]) -> bool {
+        let decoder = png::Decoder::new(std::io::Cursor::new(png));
+        let mut reader = decoder.read_info().unwrap();
+        let mut buf = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut buf).unwrap();
+        buf.as_chunks::<4>()
+            .0
+            .iter()
+            .take((info.width * info.height) as usize)
+            .any(|pixel| *pixel == want)
+    }
+
+    fn line_rule(symbolizers: Vec<Symbolizer>) -> Rule {
+        Rule {
+            name: None,
+            filter: None,
+            min_scale: None,
+            max_scale: None,
+            symbolizers,
+        }
+    }
+
+    fn line_stroke(color: &str, width: f64) -> Symbolizer {
+        Symbolizer::Line(crate::sld::LineSymbolizer {
+            stroke: Stroke {
+                color: Some(color.into()),
+                width: Some(width),
+                opacity: None,
+                dash_array: None,
+            },
+        })
+    }
+
+    #[test]
+    fn later_same_type_symbolizer_paints_on_top() {
+        let request = map_request("0,0,10,10", 100, 100);
+        let layer = RenderLayer {
+            name: "roads".to_string(),
+            features: vec![Feature::new(
+                Some("1".into()),
+                Geometry::LineString {
+                    coordinates: vec![[0.0, 5.0], [10.0, 5.0]],
+                },
+                serde_json::json!({}),
+            )],
+            style: Style {
+                name: None,
+                rules: vec![line_rule(vec![
+                    line_stroke("#FF0000", 20.0),
+                    line_stroke("#0000FF", 20.0),
+                ])],
+            },
+        };
+        let png = render_map(&request, &[layer]);
+        assert_eq!(
+            rgba_at(&png, 50, 50),
+            [0, 0, 255, 255],
+            "the later line symbolizer should cover the earlier one"
+        );
+    }
+
+    #[test]
+    fn text_symbolizer_draws_label_from_property() {
+        let request = map_request("0,0,10,10", 200, 200);
+        let layer = RenderLayer {
+            name: "places".to_string(),
+            features: vec![Feature::new(
+                Some("1".into()),
+                Geometry::Point {
+                    coordinates: [5.0, 5.0],
+                },
+                serde_json::json!({"name": "X"}),
+            )],
+            style: Style {
+                name: None,
+                rules: vec![line_rule(vec![Symbolizer::Text(
+                    crate::sld::TextSymbolizer {
+                        label_property: "name".into(),
+                        font_family: None,
+                        font_size: Some(64.0),
+                        fill: Some(Fill {
+                            color: Some("#FF0000".into()),
+                            opacity: None,
+                        }),
+                    },
+                )])],
+            },
+        };
+        let png = render_map(&request, &[layer]);
+        assert!(
+            png_has_rgba(&png, [255, 0, 0, 255]),
+            "a TextSymbolizer should paint the property as red label pixels"
+        );
+        assert_eq!(rgba_at(&png, 2, 2), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn text_symbolizer_skips_missing_property() {
+        let request = map_request("0,0,10,10", 80, 80);
+        let layer = RenderLayer {
+            name: "places".to_string(),
+            features: vec![Feature::new(
+                Some("1".into()),
+                Geometry::Point {
+                    coordinates: [5.0, 5.0],
+                },
+                serde_json::json!({"other": "X"}),
+            )],
+            style: Style {
+                name: None,
+                rules: vec![line_rule(vec![Symbolizer::Text(
+                    crate::sld::TextSymbolizer {
+                        label_property: "name".into(),
+                        font_family: None,
+                        font_size: Some(32.0),
+                        fill: Some(Fill {
+                            color: Some("#FF0000".into()),
+                            opacity: None,
+                        }),
+                    },
+                )])],
+            },
+        };
+        let png = render_map(&request, &[layer]);
+        assert!(
+            !png_has_rgba(&png, [255, 0, 0, 255]),
+            "no label when the property is absent"
+        );
     }
 }
