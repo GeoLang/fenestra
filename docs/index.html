@@ -67,29 +67,29 @@ footer{border-top:1px solid var(--border);padding:32px 0;text-align:center;color
 <div class="card">
 <h3>🗺️ WMS (Web Map Service)</h3>
 <ul>
-<li>GetCapabilities (XML 1.3.0), minimal, not yet client-consumable</li>
-<li>GetMap request parsing</li>
-<li>BBOX validation</li>
-<li>Multi-layer support</li>
+<li>GetCapabilities 1.3.0, with namespace and xsi:schemaLocation</li>
+<li>Every layer carries EX_GeographicBoundingBox and a BoundingBox per CRS</li>
+<li>GetMap with BBOX validation and multi-layer support</li>
 <li>PNG output only, STYLES ignored</li>
+<li>No GetFeatureInfo, layers are advertised as not queryable</li>
 </ul>
 </div>
 <div class="card">
 <h3>📊 WFS (Web Feature Service)</h3>
 <ul>
-<li>GetCapabilities (XML 2.0.0), minimal, not yet client-consumable</li>
-<li>GetFeature request parsing</li>
+<li>GetCapabilities 2.0.0, with ows:OperationsMetadata and a TRUE/FALSE constraint per conformance class</li>
+<li>Per FeatureType: DefaultCRS, OtherCRS and ows:WGS84BoundingBox</li>
+<li>DescribeFeatureType, typed from the first feature of each collection</li>
+<li>GetFeature with BBOX filtering, COUNT/STARTINDEX paging and RESULTTYPE=hits</li>
 <li>GeoJSON body, served as application/json</li>
-<li>BBOX spatial filtering</li>
-<li>Feature count limiting</li>
 </ul>
 </div>
 <div class="card">
 <h3>🧱 WMTS (Web Map Tile Service)</h3>
 <ul>
-<li>GetCapabilities, minimal: TileMatrixSet carries no TileMatrix levels</li>
+<li>GetCapabilities with the WebMercatorQuad TileMatrix levels 0 to 18</li>
+<li>Every layer carries a Style, a Format, an ows:WGS84BoundingBox and a ResourceURL template</li>
 <li>GetTile, KVP and RESTful</li>
-<li>WebMercatorQuad grid</li>
 <li>Rendered through the WMS path, unstyled</li>
 </ul>
 </div>
