@@ -200,6 +200,305 @@ async fn ogc_items_returns_features() {
     assert_eq!(json["numberMatched"], 3);
 }
 
+/// Status, content type and body, for the routes whose media type matters.
+async fn get_typed(uri: &str) -> (StatusCode, String, Vec<u8>) {
+    let response = app()
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .map(|v| v.to_str().unwrap().to_string())
+        .unwrap_or_default();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, content_type, bytes.to_vec())
+}
+
+fn links_by_rel(json: &serde_json::Value) -> HashMap<String, String> {
+    json["links"]
+        .as_array()
+        .expect("links")
+        .iter()
+        .map(|l| {
+            (
+                l["rel"].as_str().unwrap().to_string(),
+                l["href"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn ogc_item_returns_one_feature_with_links() {
+    let (status, content_type, body) = get_typed("/ogc/collections/monaco_pois/items/2").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type, "application/geo+json");
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["type"], "Feature");
+    assert_eq!(json["id"], "2");
+    assert_eq!(json["properties"]["name"], "Palais Princier");
+
+    let links = links_by_rel(&json);
+    assert_eq!(
+        links["self"],
+        "http://localhost:8080/ogc/collections/monaco_pois/items/2"
+    );
+    assert_eq!(
+        links["collection"],
+        "http://localhost:8080/ogc/collections/monaco_pois"
+    );
+}
+
+#[tokio::test]
+async fn ogc_item_404s_for_an_id_the_collection_does_not_have() {
+    let (status, _) = get("/ogc/collections/monaco_pois/items/does-not-exist").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn ogc_items_of_an_unknown_collection_are_not_found() {
+    let (status, _) = get("/ogc/collections/nope/items").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _) = get("/ogc/collections/nope/items/1").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn ogc_items_links_page_forward_and_back() {
+    let bbox = "7.4,43.7,7.5,43.8";
+    let (status, body) = get(&format!(
+        "/ogc/collections/monaco_pois/items?limit=1&offset=1&bbox={bbox}"
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["numberMatched"], 3);
+    assert_eq!(json["numberReturned"], 1);
+
+    let links = links_by_rel(&json);
+    let items = "http://localhost:8080/ogc/collections/monaco_pois/items";
+    assert_eq!(
+        links["self"],
+        format!("{items}?limit=1&offset=1&bbox={bbox}")
+    );
+    assert_eq!(
+        links["next"],
+        format!("{items}?limit=1&offset=2&bbox={bbox}")
+    );
+    assert_eq!(
+        links["prev"],
+        format!("{items}?limit=1&offset=0&bbox={bbox}")
+    );
+    assert_eq!(
+        links["collection"],
+        "http://localhost:8080/ogc/collections/monaco_pois"
+    );
+
+    // the first page has nothing before it and the last nothing after it
+    let (_, body) = get(&format!("{}?limit=2", "/ogc/collections/monaco_pois/items")).await;
+    let first = links_by_rel(&serde_json::from_slice(&body).unwrap());
+    assert!(!first.contains_key("prev"));
+    assert!(first.contains_key("next"));
+
+    let (_, body) = get("/ogc/collections/monaco_pois/items?limit=2&offset=2").await;
+    let last = links_by_rel(&serde_json::from_slice(&body).unwrap());
+    assert!(!last.contains_key("next"));
+    assert_eq!(last["prev"], format!("{items}?limit=2&offset=0"));
+}
+
+/// Every route `build_router` registers, as axum spells it.
+const REGISTERED_ROUTES: [&str; 18] = [
+    "/health",
+    "/healthz",
+    "/readyz",
+    "/metrics",
+    "/wms",
+    "/wcs",
+    "/wfs",
+    "/wmts",
+    "/wmts/{layer}/{tms}/{matrix}/{row}/{col}",
+    "/ogc/",
+    "/ogc/api",
+    "/ogc/conformance",
+    "/ogc/collections",
+    "/ogc/collections/{id}",
+    "/ogc/collections/{id}/items",
+    "/ogc/collections/{id}/items/{featureId}",
+    "/ogc/collections/{id}/tiles/WebMercatorQuad/{tileMatrix}/{tileRow}/{tileCol}",
+    "/sld/symbology",
+];
+
+#[tokio::test]
+async fn ogc_api_describes_every_registered_route() {
+    let (status, content_type, body) = get_typed("/ogc/api").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type, "application/vnd.oai.openapi+json;version=3.0");
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["openapi"], "3.0.3");
+    assert_eq!(json["servers"][0]["url"], "http://localhost:8080");
+
+    let paths = json["paths"].as_object().expect("paths");
+    for route in REGISTERED_ROUTES {
+        assert!(paths.contains_key(route), "{route} is not described");
+    }
+    assert_eq!(paths.len(), REGISTERED_ROUTES.len(), "described: {paths:?}");
+    assert!(paths["/ogc/collections/{id}/items"]["get"]["responses"]["200"].is_object());
+    assert!(paths["/sld/symbology"]["post"]["requestBody"].is_object());
+}
+
+/// The document links the landing page calls `service-desc`.
+#[tokio::test]
+async fn ogc_landing_page_points_at_the_openapi_document() {
+    let (_, body) = get("/ogc/").await;
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let links = links_by_rel(&json);
+    let (status, _, _) =
+        get_typed(links["service-desc"].trim_start_matches("http://localhost:8080")).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+fn read_varint(bytes: &[u8], position: &mut usize) -> u64 {
+    let mut value = 0u64;
+    let mut shift = 0;
+    loop {
+        let byte = bytes[*position];
+        *position += 1;
+        value |= u64::from(byte & 0x7F) << shift;
+        if byte & 0x80 == 0 {
+            return value;
+        }
+        shift += 7;
+    }
+}
+
+struct VectorTileLayer {
+    name: String,
+    version: u64,
+    extent: u64,
+    features: usize,
+}
+
+/// Walk the protobuf fields of an MVT tile the spec gives numbers to: layers
+/// (3) holding name (1), features (2), extent (5) and version (15).
+fn decode_vector_tile(bytes: &[u8]) -> Vec<VectorTileLayer> {
+    let mut layers = Vec::new();
+    let mut position = 0;
+    while position < bytes.len() {
+        let key = read_varint(bytes, &mut position);
+        assert_eq!(key >> 3, 3, "only the layers field is expected");
+        assert_eq!(key & 7, 2, "layers are length delimited");
+        let length = read_varint(bytes, &mut position) as usize;
+        layers.push(decode_vector_tile_layer(
+            &bytes[position..position + length],
+        ));
+        position += length;
+    }
+    layers
+}
+
+fn decode_vector_tile_layer(bytes: &[u8]) -> VectorTileLayer {
+    let mut layer = VectorTileLayer {
+        name: String::new(),
+        version: 0,
+        extent: 0,
+        features: 0,
+    };
+    let mut position = 0;
+    while position < bytes.len() {
+        let key = read_varint(bytes, &mut position);
+        let field = key >> 3;
+        match key & 7 {
+            0 => {
+                let value = read_varint(bytes, &mut position);
+                match field {
+                    5 => layer.extent = value,
+                    15 => layer.version = value,
+                    _ => {}
+                }
+            }
+            2 => {
+                let length = read_varint(bytes, &mut position) as usize;
+                let body = &bytes[position..position + length];
+                position += length;
+                match field {
+                    1 => layer.name = String::from_utf8(body.to_vec()).unwrap(),
+                    2 => layer.features += 1,
+                    _ => {}
+                }
+            }
+            other => panic!("unexpected wire type {other} on field {field}"),
+        }
+    }
+    layer
+}
+
+/// WebMercatorQuad tile holding all three seeded points, as tileMatrix, tileRow, tileCol.
+const MONACO_TILE: (u32, u32, u32) = (12, 1493, 2132);
+
+#[tokio::test]
+async fn ogc_tile_returns_a_vector_tile_of_the_collection() {
+    let (matrix, row, col) = MONACO_TILE;
+    let (status, content_type, body) = get_typed(&format!(
+        "/ogc/collections/monaco_pois/tiles/WebMercatorQuad/{matrix}/{row}/{col}"
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(content_type, "application/vnd.mapbox-vector-tile");
+
+    let layers = decode_vector_tile(&body);
+    assert_eq!(layers.len(), 1);
+    assert_eq!(layers[0].name, "monaco_pois");
+    assert_eq!(layers[0].version, 2);
+    assert_eq!(layers[0].extent, 4096);
+    assert_eq!(layers[0].features, 3);
+}
+
+#[tokio::test]
+async fn ogc_tile_outside_the_seeded_area_carries_no_features() {
+    let (status, _, body) =
+        get_typed("/ogc/collections/monaco_pois/tiles/WebMercatorQuad/12/1493/2000").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(decode_vector_tile(&body)[0].features, 0);
+}
+
+#[tokio::test]
+async fn ogc_tile_rejects_coordinates_outside_the_matrix() {
+    let (status, _) = get("/ogc/collections/monaco_pois/tiles/WebMercatorQuad/1/2/0").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, _) = get("/ogc/collections/monaco_pois/tiles/WebMercatorQuad/25/0/0").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn ogc_tile_404s_for_an_unknown_collection() {
+    let (status, _) = get("/ogc/collections/nope/tiles/WebMercatorQuad/0/0/0").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn ogc_collection_links_to_itself_its_items_and_its_tiles() {
+    let (status, body) = get("/ogc/collections/monaco_pois").await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let links = links_by_rel(&json);
+    assert_eq!(
+        links["self"],
+        "http://localhost:8080/ogc/collections/monaco_pois"
+    );
+    assert_eq!(
+        links["items"],
+        "http://localhost:8080/ogc/collections/monaco_pois/items"
+    );
+    assert_eq!(
+        links["tiles"],
+        "http://localhost:8080/ogc/collections/monaco_pois/tiles/WebMercatorQuad/{tileMatrix}/{tileRow}/{tileCol}"
+    );
+}
+
 const WMS_NAMESPACE: &str = "http://www.opengis.net/wms";
 const WFS_NAMESPACE: &str = "http://www.opengis.net/wfs/2.0";
 const OWS_1_1_NAMESPACE: &str = "http://www.opengis.net/ows/1.1";

@@ -4,6 +4,7 @@ pub mod auth;
 pub mod coverage;
 pub mod handlers;
 pub mod metrics;
+pub mod openapi;
 pub mod render;
 pub mod source;
 
@@ -56,10 +57,19 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::wmts_rest),
         )
         .route("/ogc/", get(handlers::landing))
+        .route("/ogc/api", get(handlers::openapi))
         .route("/ogc/conformance", get(handlers::conformance))
         .route("/ogc/collections", get(handlers::collections))
         .route("/ogc/collections/{id}", get(handlers::collection))
         .route("/ogc/collections/{id}/items", get(handlers::items))
+        .route(
+            "/ogc/collections/{id}/items/{featureId}",
+            get(handlers::item),
+        )
+        .route(
+            "/ogc/collections/{id}/tiles/WebMercatorQuad/{tileMatrix}/{tileRow}/{tileCol}",
+            get(handlers::collection_tile),
+        )
         .route("/sld/symbology", post(handlers::sld_symbology))
         .with_state(state)
         .layer(middleware::from_fn(auth::auth_middleware))

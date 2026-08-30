@@ -1,13 +1,15 @@
 //! Axum request handlers for WMS, WFS, WMTS, WCS, and OGC API Features.
 
 use crate::coverage::{CoverageError, bbox_of, crop};
-use crate::render::{Crs, bbox_to_4326, build_layer, parse_crs, resolve_style};
-use crate::source::Collection;
+use crate::openapi::{OPENAPI_MEDIA_TYPE, openapi_document};
+use crate::render::{Crs, bbox_to_4326, build_layer, parse_crs, project_feature, resolve_style};
+use crate::source::{Collection, SourceError};
 use crate::{AppState, metrics_counter};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use fenestra_core::crs::{EPSG_3857, EPSG_4326};
+use fenestra_core::mvt::{DEFAULT_EXTENT, MVT_MEDIA_TYPE, MvtFeature, MvtLayer, encode_tile};
 use fenestra_core::renderer::render_map;
 use fenestra_core::xml::{OWS_1_1_NAMESPACE, OWS_2_0_NAMESPACE};
 use fenestra_core::{
@@ -21,6 +23,18 @@ use std::collections::HashMap;
 
 /// Upper bound on features pulled from the source per request.
 const FETCH_CAP: usize = 100_000;
+
+/// Media type of a GeoJSON feature or feature collection.
+const GEOJSON_MEDIA_TYPE: &str = "application/geo+json";
+
+/// The only tile matrix set the vector tile route serves.
+const WEB_MERCATOR_QUAD: &str = "WebMercatorQuad";
+
+/// Highest zoom level of the WebMercatorQuad tile matrix set.
+const MAX_TILE_MATRIX: u32 = 24;
+
+/// Features per page when no `limit` is given.
+const DEFAULT_ITEMS_LIMIT: usize = 10;
 
 /// Extent advertised for a collection whose features have no geometry.
 const WORLD_BBOX: [f64; 4] = [-180.0, -90.0, 180.0, 90.0];
@@ -71,6 +85,27 @@ fn bad_request(msg: impl std::fmt::Display) -> Response {
 
 fn upstream_error(msg: impl std::fmt::Display) -> Response {
     (StatusCode::BAD_GATEWAY, msg.to_string()).into_response()
+}
+
+fn not_found(msg: impl std::fmt::Display) -> Response {
+    (StatusCode::NOT_FOUND, msg.to_string()).into_response()
+}
+
+/// A source failure as a status: a name the source does not know is the
+/// client's mistake, anything else is the upstream's.
+fn source_error(err: SourceError) -> Response {
+    match err {
+        SourceError::NotFound(what) => not_found(format!("{what} not found")),
+        SourceError::Upstream(msg) => upstream_error(msg),
+    }
+}
+
+/// Serialize a body as JSON under a media type of its own.
+fn json_response(content_type: &'static str, body: &impl Serialize) -> Response {
+    match serde_json::to_vec(body) {
+        Ok(bytes) => ([("content-type", content_type)], bytes).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 /// Normalize a bbox so component 0/1 are the minimums.
@@ -679,7 +714,17 @@ struct CollectionsResponse {
     links: Vec<Link>,
 }
 
+fn link(href: String, rel: &str, media_type: &str, title: &str) -> Link {
+    Link {
+        href,
+        rel: rel.to_string(),
+        media_type: Some(media_type.to_string()),
+        title: Some(title.to_string()),
+    }
+}
+
 fn collection_info(collection: &Collection, base_url: &str) -> CollectionInfo {
+    let self_href = format!("{base_url}/ogc/collections/{}", collection.id);
     CollectionInfo {
         id: collection.id.clone(),
         title: collection.title.clone(),
@@ -689,12 +734,28 @@ fn collection_info(collection: &Collection, base_url: &str) -> CollectionInfo {
             "http://www.opengis.net/def/crs/OGC/1.3/CRS84".to_string(),
             "http://www.opengis.net/def/crs/EPSG/0/3857".to_string(),
         ],
-        links: vec![Link {
-            href: format!("{base_url}/ogc/collections/{}/items", collection.id),
-            rel: "items".to_string(),
-            media_type: Some("application/geo+json".to_string()),
-            title: Some(collection.title.clone()),
-        }],
+        links: vec![
+            link(
+                self_href.clone(),
+                "self",
+                "application/json",
+                &collection.title,
+            ),
+            link(
+                format!("{self_href}/items"),
+                "items",
+                GEOJSON_MEDIA_TYPE,
+                &collection.title,
+            ),
+            link(
+                format!(
+                    "{self_href}/tiles/{WEB_MERCATOR_QUAD}/{{tileMatrix}}/{{tileRow}}/{{tileCol}}"
+                ),
+                "tiles",
+                MVT_MEDIA_TYPE,
+                "Vector tiles on the WebMercatorQuad grid",
+            ),
+        ],
     }
 }
 
@@ -743,6 +804,25 @@ pub async fn collection(State(state): State<AppState>, Path(id): Path<String>) -
     }
 }
 
+/// A page URL for the items of a collection. The bbox is the parsed one, so a
+/// query string cannot travel through a link untouched.
+fn items_href(
+    base_url: &str,
+    id: &str,
+    limit: usize,
+    offset: usize,
+    bbox: Option<&BboxFilter>,
+) -> String {
+    let mut href = format!("{base_url}/ogc/collections/{id}/items?limit={limit}&offset={offset}");
+    if let Some(b) = bbox {
+        href.push_str(&format!(
+            "&bbox={},{},{},{}",
+            b.min_x, b.min_y, b.max_x, b.max_y
+        ));
+    }
+    href
+}
+
 pub async fn items(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -752,7 +832,7 @@ pub async fn items(
     let limit = kvp
         .get("limit")
         .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(10);
+        .unwrap_or(DEFAULT_ITEMS_LIMIT);
     let offset = kvp
         .get("offset")
         .and_then(|s| s.parse::<usize>().ok())
@@ -764,13 +844,132 @@ pub async fn items(
 
     let features = match state.source.features(&id, Some(FETCH_CAP)).await {
         Ok(f) => f,
-        Err(e) => return upstream_error(e),
+        Err(e) => return source_error(e),
     };
     let features = match &bbox_filter {
         Some(f) => f.filter_features(&features),
         None => features,
     };
-    Json(paginate_features(&features, offset, limit)).into_response()
+    let mut page = paginate_features(&features, offset, limit);
+    let href = |offset| items_href(&state.base_url, &id, limit, offset, bbox_filter.as_ref());
+    page.links = vec![link(
+        href(offset),
+        "self",
+        GEOJSON_MEDIA_TYPE,
+        "This page of features",
+    )];
+    let matched = page.number_matched.unwrap_or_default();
+    let returned = page.number_returned.unwrap_or_default();
+    if offset + returned < matched {
+        page.links.push(link(
+            href(offset + returned),
+            "next",
+            GEOJSON_MEDIA_TYPE,
+            "Next page",
+        ));
+    }
+    if offset > 0 {
+        page.links.push(link(
+            href(offset.saturating_sub(limit)),
+            "prev",
+            GEOJSON_MEDIA_TYPE,
+            "Previous page",
+        ));
+    }
+    page.links.push(link(
+        format!("{}/ogc/collections/{id}", state.base_url),
+        "collection",
+        "application/json",
+        "The collection these features belong to",
+    ));
+    json_response(GEOJSON_MEDIA_TYPE, &page)
+}
+
+pub async fn item(
+    State(state): State<AppState>,
+    Path((id, feature_id)): Path<(String, String)>,
+) -> Response {
+    let found = match state.source.feature(&id, &feature_id).await {
+        Ok(f) => f,
+        Err(e) => return source_error(e),
+    };
+    let Some(mut feature) = found else {
+        return not_found(format!("feature {feature_id} not found in collection {id}"));
+    };
+    feature.links = vec![
+        link(
+            format!("{}/ogc/collections/{id}/items/{feature_id}", state.base_url),
+            "self",
+            GEOJSON_MEDIA_TYPE,
+            "This feature",
+        ),
+        link(
+            format!("{}/ogc/collections/{id}", state.base_url),
+            "collection",
+            "application/json",
+            "The collection this feature belongs to",
+        ),
+    ];
+    json_response(GEOJSON_MEDIA_TYPE, &feature)
+}
+
+pub async fn openapi(State(state): State<AppState>) -> Response {
+    json_response(OPENAPI_MEDIA_TYPE, &openapi_document(&state.base_url))
+}
+
+/// A vector tile of one collection on the WebMercatorQuad grid. Features are
+/// filtered in CRS84 and encoded in the tile's own web mercator box.
+pub async fn collection_tile(
+    State(state): State<AppState>,
+    Path((id, tile_matrix, tile_row, tile_col)): Path<(String, u32, u32, u32)>,
+) -> Response {
+    metrics_counter("fenestra_vector_tile_requests");
+    if tile_matrix > MAX_TILE_MATRIX {
+        return bad_request(format!(
+            "tileMatrix {tile_matrix} is above {MAX_TILE_MATRIX}"
+        ));
+    }
+    let matrix_width = 2u32.pow(tile_matrix);
+    if tile_row >= matrix_width || tile_col >= matrix_width {
+        return bad_request(format!(
+            "tileRow and tileCol must be below {matrix_width} at tileMatrix {tile_matrix}"
+        ));
+    }
+    let tile = match WmtsGetTileRequest::parse(
+        &id,
+        "default",
+        WEB_MERCATOR_QUAD,
+        &tile_matrix.to_string(),
+        tile_row,
+        tile_col,
+        MVT_MEDIA_TYPE,
+    ) {
+        Ok(t) => t,
+        Err(e) => return bad_request(e),
+    };
+    let features = match state.source.features(&id, Some(FETCH_CAP)).await {
+        Ok(f) => f,
+        Err(e) => return source_error(e),
+    };
+
+    let (min_x, min_y, max_x, max_y) = tile.tile_bounds();
+    let bbox = [min_x, min_y, max_x, max_y];
+    let filter = norm_bbox(bbox_to_4326(bbox, Crs::WebMercator));
+    let layer = MvtLayer {
+        name: id,
+        extent: DEFAULT_EXTENT,
+        features: filter
+            .filter_features(&features)
+            .iter()
+            .map(|feature| project_feature(feature, Crs::WebMercator))
+            .filter_map(|feature| MvtFeature::from_geojson(&feature))
+            .collect(),
+    };
+    (
+        [("content-type", MVT_MEDIA_TYPE)],
+        encode_tile(&[layer], bbox),
+    )
+        .into_response()
 }
 
 // ─── SLD conversion ──────────────────────────────────────────────────────────

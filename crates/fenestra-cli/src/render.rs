@@ -84,12 +84,14 @@ fn project_geometry(geom: &Geometry, crs: Crs) -> Geometry {
     }
 }
 
-fn project_feature(f: &Feature, crs: Crs) -> Feature {
+/// Reproject a feature's geometry into `crs`, keeping everything else.
+pub fn project_feature(f: &Feature, crs: Crs) -> Feature {
     Feature {
         feature_type: f.feature_type.clone(),
         id: f.id.clone(),
         geometry: f.geometry.as_ref().map(|g| project_geometry(g, crs)),
         properties: f.properties.clone(),
+        links: f.links.clone(),
     }
 }
 

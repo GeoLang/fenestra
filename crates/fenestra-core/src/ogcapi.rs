@@ -62,6 +62,8 @@ pub struct Feature {
     pub id: Option<String>,
     pub geometry: Option<Geometry>,
     pub properties: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<Link>,
 }
 
 impl Feature {
@@ -71,6 +73,7 @@ impl Feature {
             id,
             geometry: Some(geometry),
             properties,
+            links: Vec::new(),
         }
     }
 }
@@ -85,6 +88,8 @@ pub struct FeatureCollection {
     pub number_matched: Option<usize>,
     #[serde(rename = "numberReturned", skip_serializing_if = "Option::is_none")]
     pub number_returned: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<Link>,
 }
 
 impl FeatureCollection {
@@ -95,6 +100,7 @@ impl FeatureCollection {
             features,
             number_matched: Some(count),
             number_returned: Some(count),
+            links: Vec::new(),
         }
     }
 }
@@ -287,6 +293,7 @@ pub fn paginate_features(features: &[Feature], offset: usize, limit: usize) -> F
         features: page,
         number_matched: Some(total),
         number_returned: Some(returned),
+        links: Vec::new(),
     }
 }
 

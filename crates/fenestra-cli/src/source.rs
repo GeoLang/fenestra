@@ -7,6 +7,9 @@ use async_trait::async_trait;
 use fenestra_core::{Feature, FeatureCollection};
 use serde::Deserialize;
 
+/// Rows Ptolemy's GeoJSON export returns when the request sets no limit.
+const PTOLEMY_EXPORT_PAGE: usize = 10_000;
+
 /// Metadata about an available collection (a Ptolemy dataset).
 #[derive(Debug, Clone)]
 pub struct Collection {
@@ -47,6 +50,16 @@ pub trait FeatureSource: Send + Sync {
         layer: &str,
         limit: Option<usize>,
     ) -> Result<Vec<Feature>, SourceError>;
+
+    /// Fetch one feature of a layer by its id. The default scans the layer, so
+    /// a source whose default page is smaller than a layer must override it.
+    async fn feature(&self, layer: &str, id: &str) -> Result<Option<Feature>, SourceError> {
+        Ok(self
+            .features(layer, None)
+            .await?
+            .into_iter()
+            .find(|f| f.id.as_deref() == Some(id)))
+    }
 }
 
 #[derive(Deserialize)]
@@ -123,6 +136,19 @@ impl PtolemyFeatureSource {
             .map(|b| b.id.clone())
             .ok_or_else(|| SourceError::NotFound(format!("branch for dataset {dataset_id}")))
     }
+
+    async fn export(&self, url: &str) -> Result<Vec<Feature>, SourceError> {
+        let fc: FeatureCollection = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| SourceError::Upstream(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| SourceError::Upstream(e.to_string()))?;
+        Ok(fc.features)
+    }
 }
 
 #[async_trait]
@@ -151,15 +177,28 @@ impl FeatureSource for PtolemyFeatureSource {
         if let Some(limit) = limit {
             url.push_str(&format!("?limit={limit}"));
         }
-        let fc: FeatureCollection = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| SourceError::Upstream(e.to_string()))?
-            .json()
-            .await
-            .map_err(|e| SourceError::Upstream(e.to_string()))?;
-        Ok(fc.features)
+        self.export(&url).await
+    }
+
+    // the export endpoint has no id filter and caps an unlimited request at
+    // PTOLEMY_EXPORT_PAGE, so the lookup walks the branch a page at a time
+    async fn feature(&self, layer: &str, id: &str) -> Result<Option<Feature>, SourceError> {
+        let dataset_id = self.dataset_id(layer).await?;
+        let branch_id = self.branch_id(&dataset_id).await?;
+        let mut offset = 0;
+        loop {
+            let url = format!(
+                "{}/api/v1/branches/{branch_id}/export/geojson?limit={PTOLEMY_EXPORT_PAGE}&offset={offset}",
+                self.base
+            );
+            let page = self.export(&url).await?;
+            if let Some(found) = page.iter().find(|f| f.id.as_deref() == Some(id)) {
+                return Ok(Some(found.clone()));
+            }
+            if page.len() < PTOLEMY_EXPORT_PAGE {
+                return Ok(None);
+            }
+            offset += page.len();
+        }
     }
 }

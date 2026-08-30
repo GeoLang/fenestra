@@ -6,10 +6,14 @@
 //! Features are clipped to the tile extent and coordinates are quantized to
 //! integer tile-local positions within a configurable extent (default 4096).
 
+use crate::ogcapi::{Feature, Geometry};
 use std::collections::HashMap;
 
 /// Default tile extent in MVT coordinate space.
 pub const DEFAULT_EXTENT: u32 = 4096;
+
+/// Media type of an encoded vector tile.
+pub const MVT_MEDIA_TYPE: &str = "application/vnd.mapbox-vector-tile";
 
 /// A feature to encode into an MVT layer.
 #[derive(Debug, Clone)]
@@ -44,6 +48,62 @@ pub struct MvtLayer {
     pub name: String,
     pub extent: u32,
     pub features: Vec<MvtFeature>,
+}
+
+impl MvtGeometry {
+    /// The MVT form of a GeoJSON geometry. A multi-part geometry becomes the
+    /// matching single-part variant holding every part.
+    pub fn from_geojson(geometry: &Geometry) -> Self {
+        match geometry {
+            Geometry::Point { coordinates } => MvtGeometry::Point(vec![*coordinates]),
+            Geometry::MultiPoint { coordinates } => MvtGeometry::Point(coordinates.clone()),
+            Geometry::LineString { coordinates } => {
+                MvtGeometry::LineString(vec![coordinates.clone()])
+            }
+            Geometry::MultiLineString { coordinates } => {
+                MvtGeometry::LineString(coordinates.clone())
+            }
+            Geometry::Polygon { coordinates } => MvtGeometry::Polygon(coordinates.clone()),
+            Geometry::MultiPolygon { coordinates } => MvtGeometry::Polygon(coordinates.concat()),
+        }
+    }
+}
+
+/// The MVT form of a JSON property value, `None` for null and for the nested
+/// arrays and objects the MVT value types cannot hold.
+pub fn mvt_value(value: &serde_json::Value) -> Option<MvtValue> {
+    match value {
+        serde_json::Value::String(s) => Some(MvtValue::String(s.clone())),
+        serde_json::Value::Bool(b) => Some(MvtValue::Bool(*b)),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map(MvtValue::Int)
+            .or_else(|| n.as_f64().map(MvtValue::Double)),
+        _ => None,
+    }
+}
+
+impl MvtFeature {
+    /// The MVT form of a GeoJSON feature, `None` when it carries no geometry.
+    /// The feature id is kept only when it is a u64, the only id type MVT has.
+    pub fn from_geojson(feature: &Feature) -> Option<Self> {
+        let geometry = MvtGeometry::from_geojson(feature.geometry.as_ref()?);
+        let properties = feature
+            .properties
+            .as_object()
+            .map(|object| {
+                object
+                    .iter()
+                    .filter_map(|(key, value)| Some((key.clone(), mvt_value(value)?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Some(Self {
+            id: feature.id.as_ref().and_then(|id| id.parse().ok()),
+            geometry,
+            properties,
+        })
+    }
 }
 
 /// Encode a set of layers into MVT protobuf bytes.
@@ -484,6 +544,69 @@ mod tests {
         };
         let bytes = encode_tile(&[layer], [0.0, 0.0, 1.0, 1.0]);
         assert!(!bytes.is_empty());
+    }
+
+    #[test]
+    fn geojson_multi_part_geometries_keep_every_part() {
+        let multi_polygon = Geometry::MultiPolygon {
+            coordinates: vec![
+                vec![vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 0.0]]],
+                vec![vec![[2.0, 2.0], [3.0, 2.0], [3.0, 3.0], [2.0, 2.0]]],
+            ],
+        };
+        match MvtGeometry::from_geojson(&multi_polygon) {
+            MvtGeometry::Polygon(rings) => assert_eq!(rings.len(), 2),
+            other => panic!("expected Polygon, got {other:?}"),
+        }
+
+        let multi_point = Geometry::MultiPoint {
+            coordinates: vec![[0.0, 0.0], [1.0, 1.0]],
+        };
+        match MvtGeometry::from_geojson(&multi_point) {
+            MvtGeometry::Point(points) => assert_eq!(points.len(), 2),
+            other => panic!("expected Point, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn geojson_feature_keeps_a_numeric_id_and_scalar_properties() {
+        let feature = Feature::new(
+            Some("42".to_string()),
+            Geometry::Point {
+                coordinates: [0.5, 0.5],
+            },
+            serde_json::json!({"name": "test", "lanes": 4, "tags": ["a"], "note": null}),
+        );
+        let mvt = MvtFeature::from_geojson(&feature).expect("feature with a geometry");
+        assert_eq!(mvt.id, Some(42));
+        assert_eq!(
+            mvt.properties.get("name"),
+            Some(&MvtValue::String("test".to_string()))
+        );
+        assert_eq!(mvt.properties.get("lanes"), Some(&MvtValue::Int(4)));
+        assert!(!mvt.properties.contains_key("tags"));
+        assert!(!mvt.properties.contains_key("note"));
+
+        let uuid_id = Feature::new(
+            Some("0f8b7a3e-0000-0000-0000-000000000000".to_string()),
+            Geometry::Point {
+                coordinates: [0.5, 0.5],
+            },
+            serde_json::json!({}),
+        );
+        assert_eq!(MvtFeature::from_geojson(&uuid_id).unwrap().id, None);
+    }
+
+    #[test]
+    fn geojson_feature_without_a_geometry_is_dropped() {
+        let feature = Feature {
+            feature_type: "Feature".to_string(),
+            id: None,
+            geometry: None,
+            properties: serde_json::json!({}),
+            links: Vec::new(),
+        };
+        assert!(MvtFeature::from_geojson(&feature).is_none());
     }
 
     #[test]
