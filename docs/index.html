@@ -125,9 +125,19 @@ footer{border-top:1px solid var(--border);padding:32px 0;text-align:center;color
 <h3>📚 OGC API Features</h3>
 <ul>
 <li>Landing page and conformance</li>
-<li>Collections and items</li>
+<li>Collections, items and single features by id</li>
 <li>BBOX filtering and pagination</li>
-<li>No single-feature route, no OpenAPI document, no item links</li>
+<li>OpenAPI 3.0 document at /ogc/api</li>
+<li>self, next, prev and collection links on every response</li>
+</ul>
+</div>
+<div class="card">
+<h3>🧩 Vector Tiles</h3>
+<ul>
+<li>MVT per collection on the WebMercatorQuad grid</li>
+<li>One layer per tile, named after the collection</li>
+<li>Unclipped and unsimplified</li>
+<li>Non-scalar properties and non-numeric ids left out</li>
 </ul>
 </div>
 <div class="card">
