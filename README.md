@@ -3,25 +3,25 @@
 [![CI](https://github.com/GeoLang/fenestra/actions/workflows/ci.yml/badge.svg)](https://github.com/GeoLang/fenestra/actions)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 
-OGC services gateway for the GeoLang GIS stack — the GeoServer-equivalent component.
+OGC services gateway for the GeoLang GIS stack: the GeoServer-equivalent component.
 
 [Documentation](https://geolang.github.io/fenestra/) · [GitHub](https://github.com/GeoLang/fenestra)
 
 ## Features
 
-- **WMS** — GetCapabilities (XML 1.3.0), GetMap with server-side rendering to PNG, EPSG:4326 and EPSG:3857. Output is always PNG: `FORMAT` and `STYLES` are parsed and ignored
-- **WFS** — 2.0.0 KVP: GetCapabilities, DescribeFeatureType, GetFeature with bbox filtering, `COUNT`/`STARTINDEX` paging and `RESULTTYPE=hits`. Features come back as GeoJSON, so `OUTPUTFORMAT` takes `application/json` and its aliases and refuses anything else with an OWS ExceptionReport, as does an `SRSNAME` other than EPSG:4326. DescribeFeatureType reads the property names and types off the first feature of each collection, so a collection whose features carry different properties is described by that one feature
-- **WMTS** — GetCapabilities, GetTile (KVP and RESTful), tiles rendered through the same path as WMS on the WebMercatorQuad grid. Tiles are rendered unstyled: no SLD is applied
-- **GetCapabilities documents** — WMS 1.3.0, WFS 2.0.0, WMTS 1.0.0 and WCS 2.0.1 each declare their namespace and `xsi:schemaLocation`, and build every OnlineResource from `FENESTRA_PUBLIC_URL`. Each layer carries the extent of its own features, world extent when it has none: `EX_GeographicBoundingBox` plus a `BoundingBox` per advertised CRS in WMS, `ows:WGS84BoundingBox` with `DefaultCRS` and `OtherCRS` in WFS, `ows:WGS84BoundingBox` with a Style and a Format in WMTS. WFS adds `ows:OperationsMetadata` listing GetCapabilities, DescribeFeatureType and GetFeature with the conformance classes the server actually implements. Proven with GDAL 3.11: `ogrinfo -ro -so "WFS:http://localhost:8080/wfs"` lists the feature types and reads their fields, extents, counts and features, `gdalinfo "WMS:http://localhost:8080/wms?"` lists the layers as georeferenced subdatasets, and `gdalinfo "WMTS:http://localhost:8080/wmts?request=GetCapabilities"` lists them as tiled subdatasets
-- **WCS** — 2.0.1 core (KVP): GetCapabilities, DescribeCoverage, GetCoverage with bbox subsetting in the native CRS, GeoTIFF output. Coverages are GeoTIFF files in `COVERAGE_DIR` (default `./coverages`), one coverage per file, id = file stem. Single-band float64 only, no reprojection or scaling; files without a CRS geokey are declared EPSG:4326
-- **OGC API Features** — Landing page, conformance, collections, items with bbox filtering and pagination, single features at `items/{featureId}`, and the OpenAPI 3.0 `service-desc` document at `/ogc/api`. Feature and collection responses carry `links`: an items page links `self`, `collection` and the `next`/`prev` pages that exist, each carrying the request's `limit` and `bbox`. Read access only, and there is no CQL2 or `datetime` filtering
-- **Vector tiles** — `GET /ogc/collections/{id}/tiles/WebMercatorQuad/{tileMatrix}/{tileRow}/{tileCol}` encodes the features of a tile as MVT. One layer per tile, named after the collection, features reprojected to web mercator and quantized to a 4096 extent. Tiles are unclipped and unsimplified: a feature that touches the tile is encoded whole, and coordinates outside the tile go with it. Properties that are not a string, number or boolean are left out, as is any feature id that is not a number, the only id type MVT has
-- **Server-Side Map Rendering** — CPU (tiny-skia) backend rendering styled maps to PNG. A GPU (Vello/wgpu) backend exists behind the optional `vello` feature and is experimental
-- **SLD/SE styling** — Parse Styled Layer Descriptors: NamedLayer, Rules, filters (property comparisons, ranges, else), PointSymbolizer, LineSymbolizer, PolygonSymbolizer, TextSymbolizer, Fill, Stroke, Graphic, Mark. A rule keeps every symbolizer in document order and draws them in that order. Text labels use a bundled Caladea face; `font-family` is parsed and unused
-- **SLD to symbology** — `POST /sld/symbology` converts a style into the viewer's graduated, categorized or rule-based symbology, and reports every SLD construct that shape cannot carry instead of approximating it
-- **HTTP server** — Axum-based, async, with configurable host/port. Not tuned for production: every WMS request, WMTS tile, GetFeature and GetCapabilities document re-fetches up to 100,000 features per layer from Ptolemy with no cache, and there is no rate limit or upstream timeout
-- **Configuration** — `fenestra config` prints a default config. Layers are derived from Ptolemy collections, not from a config file
-- **Platform Integration** — Proxies to Ptolemy for feature data, part of `docker-compose.platform.yml`
+- **WMS**: GetCapabilities (XML 1.3.0), GetMap with server-side rendering to PNG, EPSG:4326 and EPSG:3857. Output is always PNG: `FORMAT` and `STYLES` are parsed and ignored
+- **WFS**: 2.0.0 KVP. GetCapabilities, DescribeFeatureType, GetFeature with bbox filtering, `COUNT`/`STARTINDEX` paging and `RESULTTYPE=hits`. Features come back as GeoJSON, so `OUTPUTFORMAT` takes `application/json` and its aliases and refuses anything else with an OWS ExceptionReport, as does an `SRSNAME` other than EPSG:4326. DescribeFeatureType reads the property names and types off the first feature of each collection, so a collection whose features carry different properties is described by that one feature
+- **WMTS**: GetCapabilities, GetTile (KVP and RESTful), tiles rendered through the same path as WMS on the WebMercatorQuad grid. Tiles are rendered unstyled: no SLD is applied
+- **GetCapabilities documents**: WMS 1.3.0, WFS 2.0.0, WMTS 1.0.0 and WCS 2.0.1 each declare their namespace and `xsi:schemaLocation`, and build every OnlineResource from `FENESTRA_PUBLIC_URL`. Each layer carries the extent of its own features, world extent when it has none: `EX_GeographicBoundingBox` plus a `BoundingBox` per advertised CRS in WMS, `ows:WGS84BoundingBox` with `DefaultCRS` and `OtherCRS` in WFS, `ows:WGS84BoundingBox` with a Style and a Format in WMTS. WFS adds `ows:OperationsMetadata` listing GetCapabilities, DescribeFeatureType and GetFeature with the conformance classes the server actually implements. Proven with GDAL 3.11: `ogrinfo -ro -so "WFS:http://localhost:8080/wfs"` lists the feature types and reads their fields, extents, counts and features, `gdalinfo "WMS:http://localhost:8080/wms?"` lists the layers as georeferenced subdatasets, and `gdalinfo "WMTS:http://localhost:8080/wmts?request=GetCapabilities"` lists them as tiled subdatasets
+- **WCS**: 2.0.1 core (KVP). GetCapabilities, DescribeCoverage, GetCoverage with bbox subsetting in the native CRS, GeoTIFF output. Coverages are GeoTIFF files in `COVERAGE_DIR` (default `./coverages`), one coverage per file, id = file stem. Single-band float64 only, no reprojection or scaling. Files without a CRS geokey are declared EPSG:4326
+- **OGC API Features**: Landing page, conformance, collections, items with bbox filtering and pagination, single features at `items/{featureId}`, and the OpenAPI 3.0 `service-desc` document at `/ogc/api`. Feature and collection responses carry `links`: an items page links `self`, `collection` and the `next`/`prev` pages that exist, each carrying the request's `limit` and `bbox`. On a Ptolemy source the single-item route pages through the GeoJSON export 10,000 rows at a time, so an id that is not there costs one request per 10,000 features in the collection. Read access only, and there is no CQL2 or `datetime` filtering
+- **Vector tiles**: `GET /ogc/collections/{id}/tiles/WebMercatorQuad/{tileMatrix}/{tileRow}/{tileCol}` encodes the features of a tile as MVT. One layer per tile, named after the collection, features reprojected to web mercator and quantized to a 4096 extent. Tiles are unclipped and unsimplified: a feature that touches the tile is encoded whole, and coordinates outside the tile go with it. Properties that are not a string, number or boolean are left out, as is any feature id that is not a number, the only id type MVT has
+- **Server-Side Map Rendering**: CPU (tiny-skia) backend rendering styled maps to PNG. A GPU (Vello/wgpu) backend exists behind the optional `vello` feature and is experimental
+- **SLD/SE styling**: Styled Layer Descriptors are parsed for NamedLayer, Rules, filters (property comparisons, ranges, else), PointSymbolizer, LineSymbolizer, PolygonSymbolizer, TextSymbolizer, Fill, Stroke, Graphic, Mark. A rule keeps every symbolizer in document order and draws them in that order. Text labels use a bundled Caladea face. `font-family` is parsed and unused
+- **SLD to symbology**: `POST /sld/symbology` converts a style into the viewer's graduated, categorized or rule-based symbology, and reports every SLD construct that shape cannot carry instead of approximating it
+- **HTTP server**: Axum-based, async, with configurable host/port. Not tuned for production: every WMS request, WMTS tile, GetFeature and GetCapabilities document re-fetches up to 100,000 features per layer from Ptolemy with no cache, and there is no rate limit or upstream timeout
+- **Configuration**: `fenestra config` prints a default config. Layers are derived from Ptolemy collections, not from a config file
+- **Platform Integration**: Proxies to Ptolemy for feature data, part of `docker-compose.platform.yml`
 
 ## Usage
 
@@ -38,29 +38,29 @@ curl "http://localhost:8080/wcs?SERVICE=WCS&REQUEST=GetCoverage&COVERAGEID=dem&S
 
 ### Endpoints
 
-- `GET /health` — Health check
-- `GET /healthz`, `GET /readyz` — Liveness and readiness probes
-- `GET /metrics` — Prometheus metrics
-- `GET /wms?SERVICE=WMS&REQUEST=GetCapabilities` — WMS capabilities
+- `GET /health`: Health check
+- `GET /healthz`, `GET /readyz`: Liveness and readiness probes
+- `GET /metrics`: Prometheus metrics
+- `GET /wms?SERVICE=WMS&REQUEST=GetCapabilities`: WMS capabilities
 - `GET /wms?SERVICE=WMS&REQUEST=GetMap&LAYERS=...&BBOX=...&WIDTH=256&HEIGHT=256&FORMAT=image/png`
-- `GET /wfs?SERVICE=WFS&REQUEST=GetCapabilities` — WFS capabilities
-- `GET /wfs?SERVICE=WFS&REQUEST=DescribeFeatureType&TYPENAMES=roads` — XML Schema for the feature types, all of them when `TYPENAMES` is omitted
+- `GET /wfs?SERVICE=WFS&REQUEST=GetCapabilities`: WFS capabilities
+- `GET /wfs?SERVICE=WFS&REQUEST=DescribeFeatureType&TYPENAMES=roads`: XML Schema for the feature types, all of them when `TYPENAMES` is omitted
 - `GET /wfs?SERVICE=WFS&REQUEST=GetFeature&TYPENAMES=roads&COUNT=10&STARTINDEX=20`
-- `GET /wfs?SERVICE=WFS&REQUEST=GetFeature&TYPENAMES=roads&RESULTTYPE=hits` — match count only
-- `GET /wmts?SERVICE=WMTS&REQUEST=GetCapabilities` — WMTS capabilities
+- `GET /wfs?SERVICE=WFS&REQUEST=GetFeature&TYPENAMES=roads&RESULTTYPE=hits`: match count only
+- `GET /wmts?SERVICE=WMTS&REQUEST=GetCapabilities`: WMTS capabilities
 - `GET /wmts?SERVICE=WMTS&REQUEST=GetTile&LAYER=...&TILEMATRIX=...&TILEROW=0&TILECOL=0`
-- `GET /wcs?SERVICE=WCS&REQUEST=GetCapabilities` — WCS capabilities
+- `GET /wcs?SERVICE=WCS&REQUEST=GetCapabilities`: WCS capabilities
 - `GET /wcs?SERVICE=WCS&REQUEST=DescribeCoverage&COVERAGEID=dem`
 - `GET /wcs?SERVICE=WCS&REQUEST=GetCoverage&COVERAGEID=dem&SUBSET=x(10.5,11.5)&SUBSET=y(49,50)`
-- `GET /ogc/` — OGC API landing page
-- `GET /ogc/api` — OpenAPI 3.0 definition of these endpoints
-- `GET /ogc/conformance` — Conformance declaration
-- `GET /ogc/collections` — List feature collections
-- `GET /ogc/collections/{id}` — Single collection description
-- `GET /ogc/collections/{id}/items` — Query features with bbox, limit, offset
-- `GET /ogc/collections/{id}/items/{featureId}` — One feature by id
-- `GET /ogc/collections/{id}/tiles/WebMercatorQuad/{tileMatrix}/{tileRow}/{tileCol}` — Vector tile
-- `POST /sld/symbology` — Convert an SLD document (request body) into viewer symbology JSON; `?layer=` and `?style=` pick one of several in the document
+- `GET /ogc/`: OGC API landing page
+- `GET /ogc/api`: OpenAPI 3.0 definition of these endpoints
+- `GET /ogc/conformance`: Conformance declaration
+- `GET /ogc/collections`: List feature collections
+- `GET /ogc/collections/{id}`: Single collection description
+- `GET /ogc/collections/{id}/items`: Query features with bbox, limit, offset
+- `GET /ogc/collections/{id}/items/{featureId}`: One feature by id
+- `GET /ogc/collections/{id}/tiles/WebMercatorQuad/{tileMatrix}/{tileRow}/{tileCol}`: Vector tile
+- `POST /sld/symbology`: Convert an SLD document (request body) into viewer symbology JSON. `?layer=` and `?style=` pick one of several in the document
 
 ### Environment
 
@@ -68,14 +68,14 @@ curl "http://localhost:8080/wcs?SERVICE=WCS&REQUEST=GetCoverage&COVERAGEID=dem&S
 |---|---|---|
 | `PTOLEMY_URL` | `http://ptolemy:3000` | Feature source |
 | `COVERAGE_DIR` | `./coverages` | GeoTIFF coverages for WCS |
-| `FENESTRA_JWT_SECRET` | unset (auth off) | JWT secret; health and metrics stay public |
+| `FENESTRA_JWT_SECRET` | unset (auth off) | JWT secret. Health and metrics stay public |
 | `FENESTRA_PUBLIC_URL` | `http://<host>:<port>` | Externally reachable base URL, path prefix included, for the absolute URLs in every capabilities document and the OGC API links. Set it when fenestra sits behind a reverse proxy |
 
 ## Architecture
 
 ```
-fenestra-core    — OGC protocol implementations (WMS, WFS, WMTS, WCS, OGC API, SLD)
-fenestra-cli     — HTTP server and CLI
+fenestra-core: OGC protocol implementations (WMS, WFS, WMTS, WCS, OGC API, SLD)
+fenestra-cli:  HTTP server and CLI
 ```
 
 The workspace also holds four library crates that the server does not depend on yet:
