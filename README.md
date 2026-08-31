@@ -78,9 +78,11 @@ fenestra-core: OGC protocol implementations (WMS, WFS, WMTS, WCS, OGC API, SLD)
 fenestra-cli:  HTTP server and CLI
 ```
 
-The workspace also holds four library crates that the server does not depend on yet:
+The workspace also holds four library crates that the server does not depend on. They are not
+features of the running service, and nothing in `fenestra-cli` links them:
 `fenestra-inspire` (stub: CSW request/response types with no parsing or XML generation, plus
-three substring checks for INSPIRE metadata), `fenestra-geofence` (spatial access control),
+three substring checks for INSPIRE metadata), `fenestra-geofence` (library-only: rule types and a
+plugin implementation for spatial access control, never registered by the server),
 `fenestra-cascade` (stub: rewrites an upstream URL and caches, but makes no HTTP request), and
 `fenestra-printing` (PDF output, still a stub).
 
