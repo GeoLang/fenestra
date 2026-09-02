@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- 2026-09-02: `terrano-core` pinned at git tag `v0.2.0`, up from `v0.1.0`. The WCS coverage path still reads single-band float64 through `read_geotiff`.
+
 ### Removed
 
 - 2026-09-02: the `fenestra-core::processes` module. It held OGC API Processes
