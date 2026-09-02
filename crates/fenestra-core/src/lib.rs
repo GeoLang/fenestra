@@ -1,7 +1,7 @@
 //! Fenestra — OGC services gateway.
 //!
 //! Protocol implementations for WMS, WFS, WMTS, WCS, OGC API Features,
-//! OGC API Tiles, and OGC API Processes.
+//! and MVT vector tiles.
 //! Provides request parsing, capability document generation,
 //! server-side map rendering, and response formatting.
 
@@ -11,8 +11,6 @@ pub mod crs;
 mod error;
 pub mod mvt;
 pub mod ogcapi;
-pub mod plugin;
-pub mod processes;
 pub mod renderer;
 pub mod sld;
 pub mod symbology;
@@ -29,10 +27,6 @@ pub use error::Error;
 pub use ogcapi::{
     BboxFilter, CollectionInfo, ConformanceDeclaration, Feature, FeatureCollection, Geometry,
     LandingPage, Link, features_bbox, paginate_features,
-};
-pub use plugin::{
-    BoxFuture, HookOutcome, HookPhase, Plugin, PluginError, PluginManifest, PluginRegistry,
-    PluginResult, RequestContext, ResponseContext, UserIdentity,
 };
 pub use sld::{
     ComparisonOp, Fill, Filter, Graphic, LineSymbolizer, Mark, NamedLayer, PointSymbolizer,

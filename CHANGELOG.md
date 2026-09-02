@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Removed
+
+- 2026-09-02: the `fenestra-core::processes` module. It held OGC API Processes
+  request, job and process description types plus two built-in process
+  descriptions, and no endpoint or crate ever called them.
+- 2026-09-02: the `fenestra-inspire`, `fenestra-geofence`, `fenestra-printing`
+  and `fenestra-cascade` crates, all stubs that the server never depended on,
+  and with them the `fenestra-core::plugin` module whose `Plugin` trait and
+  registry they were the only implementors of.
+
 ### Fixed
 
 - 2026-08-28: SLD GetMap draws TextSymbolizer labels and every symbolizer in a

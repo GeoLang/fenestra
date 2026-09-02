@@ -17,7 +17,6 @@ COPY --from=builder /app/target/release/fenestra /usr/local/bin/fenestra
 USER fenestra
 
 ENV RUST_LOG=info,fenestra=debug
-ENV FENESTRA_PORT=8080
 
 EXPOSE 8080
 
