@@ -8,7 +8,7 @@ edition = "2024"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/GeoLang/fenestra"
 authors = ["GeoLang <tiletopia@proton.me>"]
-description = "Windowed geospatial queries and spatial indexing"
+description = "OGC services gateway for the GeoLang GIS stack"
 rust-version = "1.85"
 
 [workspace.dependencies]
