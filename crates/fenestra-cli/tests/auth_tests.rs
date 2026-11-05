@@ -1,7 +1,3 @@
-//! FENESTRA_JWT_SECRET is process-wide and every handler reads it per request,
-//! so this file holds one test: setting it here would fail every other test
-//! sharing the binary.
-
 use async_trait::async_trait;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -51,6 +47,7 @@ async fn status(uri: &str, method: &str) -> StatusCode {
 
 #[tokio::test]
 async fn sld_symbology_needs_a_token_when_auth_is_on() {
+    // cargo runs every test in this file in one process, so this env var reaches all of them
     unsafe { std::env::set_var("FENESTRA_JWT_SECRET", "test-secret") };
 
     assert_eq!(

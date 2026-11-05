@@ -17,3 +17,4 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 fenestra-core = { path = "crates/fenestra-core" }
 terrano-core = { git = "https://github.com/GeoLang/terrano.git", tag = "v0.2.0" }
+platform-auth = { git = "https://github.com/GeoLang/platform-crates.git", branch = "master" }

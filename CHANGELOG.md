@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
+- 2026-11-04: JWT checks come from the shared `platform-auth` crate. `FENESTRA_JWT_SECRET` is read once at startup instead of on every request. Requests now get 401 for a token with an empty `sub`, a `token_use`, `agora_use` or `geolang_use` claim with any value including JSON null, a non-string `aud`, or a `name` that is a number, boolean, array or object, and for every token when the secret is set but empty or only whitespace.
+- 2026-11-04: `ci.yml` and `release.yml` call the reusable workflows in `GeoLang/.github`.
 - 2026-09-02: `terrano-core` pinned at git tag `v0.2.0`, up from `v0.1.0`. The WCS coverage path still reads single-band float64 through `read_geotiff`.
 
 ### Removed
@@ -20,6 +22,9 @@ All notable changes to this project will be documented in this file.
 
 ### Fixed
 
+- 2026-11-05: a `FENESTRA_JWT_SECRET` that is set but not valid UTF-8 stops the
+  server at startup with an error naming the variable. It used to count as
+  unset, which turned auth off.
 - 2026-08-28: SLD GetMap draws TextSymbolizer labels and every symbolizer in a
   rule, in document order.
 

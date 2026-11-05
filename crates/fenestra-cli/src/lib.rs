@@ -1,6 +1,5 @@
 //! Fenestra HTTP server: router assembly and shared state.
 
-pub mod auth;
 pub mod coverage;
 pub mod handlers;
 pub mod metrics;
@@ -72,7 +71,14 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/sld/symbology", post(handlers::sld_symbology))
         .with_state(state)
-        .layer(middleware::from_fn(auth::auth_middleware))
+        .layer(middleware::from_fn_with_state(
+            platform_auth::TokenGate::new(std::env::var_os("FENESTRA_JWT_SECRET").map(|secret| {
+                secret
+                    .into_string()
+                    .unwrap_or_else(|_| panic!("FENESTRA_JWT_SECRET is set but not UTF-8"))
+            })),
+            platform_auth::auth_middleware,
+        ))
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
 }
