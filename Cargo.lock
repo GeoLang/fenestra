@@ -631,7 +631,7 @@ version = "0.1.0"
 dependencies = [
  "fontdue",
  "jung-core",
- "jung-style",
+ "jung-style 0.2.0",
  "jung-vello",
  "png 0.17.16",
  "pollster",
@@ -1299,7 +1299,7 @@ name = "jung-core"
 version = "0.1.0"
 source = "git+https://github.com/GeoLang/jung.git?tag=v0.1.0#9da589df473d7e3b8de1aefde2d4c86fcb08bde5"
 dependencies = [
- "jung-style",
+ "jung-style 0.1.0",
  "thiserror 2.0.20",
  "ttf-parser",
 ]
@@ -1315,12 +1315,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "jung-style"
+version = "0.2.0"
+source = "git+https://github.com/GeoLang/jung.git?tag=v0.2.0#96f01c08ed9e068b1203680ba5b72abafa9a552b"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "jung-vello"
 version = "0.1.0"
 source = "git+https://github.com/GeoLang/jung.git?tag=v0.1.0#9da589df473d7e3b8de1aefde2d4c86fcb08bde5"
 dependencies = [
  "jung-core",
- "jung-style",
+ "jung-style 0.1.0",
  "vello",
 ]
 
